@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-brightgreen.svg)](https://nodejs.org/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-1.29%2B-purple.svg)](https://modelcontextprotocol.io/)
+[![Glama](https://glama.ai/mcp/servers/msking18/agent-memory-mcp/badge)](https://glama.ai/mcp/servers/msking18/agent-memory-mcp)
 
 > **Persistent, per-project architectural memory, SQLite FTS5 search, file-anchored invariants, and anti-loop dead-end tracking for AI coding agents.**
 
@@ -60,6 +61,42 @@ flowchart LR
     Server <--> DB
     Server <--> Index
 ```
+
+---
+
+## 🧠 Deep Dives: How It Solves Core Agent Bottlenecks
+
+### 🛡️ How Anti-Looping Works
+
+Naive tool-call deduplication (like counting repeated shell strings) fails because LLMs will simply tweak a flag or rewrite a bash command, bypassing the counter while repeating the same broken approach.
+
+`agent-memory-mcp` solves this as a **structured error-to-failed-fix registry**:
+
+1. **In-Session Circuit Breaker (The 3-Strike Rule)**: The agent operates under a prompt boundary: if 3 consecutive attempts fail to resolve a bug or test failure, autonomous execution halts.
+2. **Recording Failed Hypotheses**: The agent calls `record_dead_end` with:
+   - `error_pattern`: The exact compiler error, symptom, or stack trace.
+   - `attempted_solution`: What was tried and failed (e.g. *"Downgrading Node version"*).
+   - `root_cause`: Why it failed / the architectural constraint discovered.
+   - `files`: The relevant files involved.
+3. **Negative Constraint Injection**: Before attempting a fix, the agent queries `check_dead_ends` (or `get_file_memories`). The engine performs tokenized matching against error messages and files. If a match is found, it injects an explicit negative constraint:
+   ```text
+   [DEAD-END FOUND] DO NOT REPEAT: Downgrading Node version (Root Cause: Broken peer dependencies in package.json)
+   ```
+   In transformer attention mechanisms, hard negative constraints shift attention weights away from the failing path, forcing the model to hypothesize a genuinely different solution or ask the user for guidance.
+4. **Cross-Session Immunity**: Because records are stored in SQLite, if an agent spent 20 minutes yesterday learning that a flag causes deadlocks, a brand new session tomorrow (or a parallel subagent) is already immunized.
+
+---
+
+### 🔍 How FTS5 Handles Vocabulary Mismatch
+
+Pure keyword search can suffer from vocabulary mismatch (e.g., a note saved as *"login fails after token refresh"* might not match an agent query for *"auth bug"*).
+
+`agent-memory-mcp` resolves this without heavy external vector databases:
+
+1. **Weighted Tag Indexing (4x BM25 Weight)**: Notes require categorical `tags` (e.g., `["auth", "jwt", "session"]`). Tags receive 4x scoring weight in the BM25 formula, ensuring domain searches like `"auth"` hit relevant notes regardless of phrasing.
+2. **Porter Stemming (`porter unicode61`)**: Words are automatically stemmed (`refresh`, `refreshed`, `refreshing` match each other).
+3. **Multi-Term Fallback**: Queries execute `AND` prefix matching first. If no exact match is found, the engine automatically falls back to an `OR` query ranked by BM25 rather than returning empty.
+4. **File-Anchored Context (`get_file_memories`)**: Instead of guessing search keywords, agents pass the file paths they are about to modify (e.g., `src/lib/auth.ts`). The tool returns all past architectural invariants, gotchas, and dead-ends linked to that file directly.
 
 ---
 

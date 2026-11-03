@@ -1,19 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
 /**
- * Returns the root data directory (defaults to C:\Users\mskah\.ag-memory-mcp,
- * overridable via AG_MEMORY_DATA_DIR for isolated testing).
+ * Returns the root data directory (defaults to ~/.ag-memory-mcp,
+ * overridable via AG_MEMORY_DATA_DIR for isolated testing or custom locations).
  */
 export function getDataRoot() {
     if (process.env.AG_MEMORY_DATA_DIR && process.env.AG_MEMORY_DATA_DIR.trim()) {
         return path.resolve(process.env.AG_MEMORY_DATA_DIR.trim());
     }
-    return DEFAULT_ROOT;
+    return path.join(os.homedir(), ".ag-memory-mcp");
 }
 
 export function getStoresDir() {

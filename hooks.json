@@ -1,0 +1,12 @@
+{
+  "agent-memory-startup": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node --no-warnings ./src/session-start-hook.js",
+        "timeout": 5
+      }
+    ]
+  }
+}

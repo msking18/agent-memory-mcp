@@ -1,0 +1,17 @@
+{
+  "name": "agent-memory",
+  "displayName": "Agent Memory",
+  "version": "3.0.0",
+  "description": "Persistent per-project SQLite + FTS5 memory, file-anchored architectural invariants, zero-turn startup hydration, and anti-loop dead-end tracking.",
+  "logo": "assets/logo.svg",
+  "author": "Manveer Singh Kahlon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/msking18/agent-memory-mcp"
+  },
+  "suggestedPrompts": [
+    "Check the project memory status and summarize recent session logs",
+    "Search project memory for architectural decisions and file gotchas",
+    "Review recorded anti-loop dead-ends for this workspace"
+  ]
+}

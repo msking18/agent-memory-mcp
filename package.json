@@ -2,14 +2,49 @@
   "name": "agent-memory-mcp",
   "version": "3.0.0",
   "type": "module",
-  "description": "Persistent per-project SQLite + FTS5 memory MCP server for Antigravity",
+  "description": "Persistent per-project SQLite + FTS5 architectural memory, file-anchored invariants, and anti-loop dead-end tracking for AI coding agents via MCP",
   "main": "index.js",
+  "bin": {
+    "agent-memory-mcp": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22.5.0"
   },
   "scripts": {
     "start": "node --no-warnings index.js",
-    "test": "node --no-warnings --test test"
+    "test": "node --no-warnings --test test/memory.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/msking18/agent-memory-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "sqlite",
+    "fts5",
+    "antigravity",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "ai-agent",
+    "developer-tools"
+  ],
+  "author": "Manveer Singh Kahlon",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/msking18/agent-memory-mcp/issues"
+  },
+  "homepage": "https://github.com/msking18/agent-memory-mcp#readme",
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -54,7 +54,7 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         }
     });
 
-    it("1. Rejects relative paths ('./') and normalizes Windows casing to identical store keys", () => {
+    it("1. Rejects relative paths ('./') and handles platform casing/store keys", () => {
         assert.throws(() => validateProjectPath("./"), /relative paths/i);
         assert.throws(() => validateProjectPath("relative/folder"), /relative paths/i);
         assert.throws(
@@ -62,9 +62,17 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
             /does not exist/i
         );
 
-        const infoUpper = getProjectStoreInfo(projectDir.toUpperCase());
-        const infoLower = getProjectStoreInfo(projectDir.toLowerCase());
-        assert.equal(infoUpper.storeKey, infoLower.storeKey);
+        if (process.platform === "win32") {
+            // Windows NTFS is case-insensitive; ensure uppercase and lowercase resolve to identical store key
+            const infoUpper = getProjectStoreInfo(projectDir.toUpperCase());
+            const infoLower = getProjectStoreInfo(projectDir.toLowerCase());
+            assert.equal(infoUpper.storeKey, infoLower.storeKey);
+        } else {
+            // Linux/POSIX filesystems are case-sensitive; verify store key generation
+            const info = getProjectStoreInfo(projectDir);
+            assert.ok(info.storeKey);
+            assert.match(info.storeKey, /^sampleapp-/);
+        }
     });
 
     it("2. Performs lossless JIT migration, deduplicates bootstrap titles, archives backup, and handles delta merges", () => {

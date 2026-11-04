@@ -1091,8 +1091,12 @@ export function trimToSentenceBoundary(text, maxChars) {
         slice.lastIndexOf("! "),
         slice.lastIndexOf("? ")
     );
-    if (lastBoundary > maxChars * 0.6) {
+    if (lastBoundary >= maxChars * 0.5) {
         return slice.slice(0, lastBoundary + 1).trim();
+    }
+    const lastSpace = slice.lastIndexOf(" ");
+    if (lastSpace >= maxChars * 0.5) {
+        return slice.slice(0, lastSpace).trim();
     }
     return slice.trim();
 }

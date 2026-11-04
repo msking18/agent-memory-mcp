@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { closeAllDatabases } from "../src/db.js";
+import { closeAllDatabases, openDatabase, openGlobalDatabase, logTokenAudit, queryTokenMetrics } from "../src/db.js";
 import { validateProjectPath, getProjectStoreInfo, getGlobalDbPath, getConfigPath, loadConfig } from "../src/paths.js";
 import {
     checkMemoryStatus,
@@ -372,5 +372,48 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         } finally {
             await client.close();
         }
+    });
+
+    it("8. Verifies global.db schema, dead_ends migration, and token audit logging", () => {
+        const globalDb = openGlobalDatabase();
+        const tables = globalDb
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .all()
+            .map((r) => r.name);
+        assert.ok(tables.includes("global_memories"));
+        assert.ok(tables.includes("global_memories_fts"));
+        assert.ok(tables.includes("token_audit_log"));
+
+        const info = getProjectStoreInfo(projectDir);
+        const projDb = openDatabase(info.dbPath);
+        const deadEndCols = projDb
+            .prepare("PRAGMA table_info(dead_ends)")
+            .all()
+            .map((c) => c.name);
+        assert.ok(deadEndCols.includes("kind"));
+        assert.ok(deadEndCols.includes("constraints_json"));
+        assert.ok(deadEndCols.includes("status"));
+        assert.ok(deadEndCols.includes("reopened_reason"));
+        assert.ok(deadEndCols.includes("updated_at"));
+
+        for (let i = 0; i < 5; i++) {
+            logTokenAudit(
+                globalDb,
+                {
+                    timestamp: new Date().toISOString(),
+                    tool_name: "test_tool",
+                    project_path: projectDir,
+                    input_tokens: 10,
+                    output_tokens_raw: 200,
+                    output_tokens_budgeted: 150,
+                    truncated: 1
+                },
+                3 // maxEntries = 3
+            );
+        }
+
+        const metrics = queryTokenMetrics(globalDb, { timeframeHours: 1, limit: 10 });
+        assert.equal(metrics.recent_logs.length, 3);
+        assert.equal(metrics.total_calls, 3);
     });
 });

@@ -1,3 +1,10 @@
+/**
+ * @file src/paths.js
+ * @description Path constants, workspace canonicalization, projects index registry, and configuration loader.
+ * Computes deterministic hashes for workspaces, manages directory layouts under `~/.ag-memory-mcp/`,
+ * and handles environment-variable overrides for token limits.
+ */
+
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";

@@ -24,7 +24,11 @@ import {
     getFileMemories,
     estimateTokens,
     applyTokenBudget,
-    getTokenMetrics
+    getTokenMetrics,
+    saveGlobalKnowledge,
+    searchGlobalKnowledge,
+    promoteToGlobal,
+    reopenDeadEnd
 } from "../src/store.js";
 import { runSessionStartPayload } from "../src/session-start-hook.js";
 
@@ -326,7 +330,7 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         );
     });
 
-    it("7. Verifies full MCP Stdio JSON-RPC protocol: 10 tools, readOnlyHint annotations, calls & resources", async () => {
+    it("7. Verifies full MCP Stdio JSON-RPC protocol: 15 tools, readOnlyHint annotations, calls & resources", async () => {
         closeAllDatabases();
         const transport = new StdioClientTransport({
             command: process.execPath,
@@ -339,7 +343,7 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         await client.connect(transport);
         try {
             const { tools } = await client.listTools();
-            assert.equal(tools.length, 10);
+            assert.equal(tools.length, 15);
 
             const statusTool = tools.find((t) => t.name === "check_memory_status");
             assert.equal(statusTool?.annotations?.readOnlyHint, true);
@@ -365,6 +369,41 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
             });
             assert.ok(!searchRes.isError);
             assert.match(searchRes.content[0].text, /Hono/);
+
+            const saveGlobRes = await client.callTool({
+                name: "save_global_knowledge",
+                arguments: {
+                    title: "Node.js 22 SQLite In-Memory Flag",
+                    summary: "Use :memory: with DatabaseSync for ephemeral in-memory databases.",
+                    tech_stack: "nodejs"
+                }
+            });
+            assert.ok(!saveGlobRes.isError);
+            assert.match(saveGlobRes.content[0].text, /g-/);
+
+            const searchGlobRes = await client.callTool({
+                name: "search_global_knowledge",
+                arguments: { query: "ephemeral in-memory" }
+            });
+            assert.ok(!searchGlobRes.isError);
+            assert.match(searchGlobRes.content[0].text, /Node\.js 22 SQLite/);
+
+            const promoteRes = await client.callTool({
+                name: "promote_to_global",
+                arguments: {
+                    project_path: projectDir,
+                    memory_id: "tech-stack",
+                    tech_stack: "hono"
+                }
+            });
+            assert.ok(!promoteRes.isError);
+            assert.match(promoteRes.content[0].text, /Promoted memory/);
+
+            const metricsRes = await client.callTool({
+                name: "get_token_metrics",
+                arguments: { timeframe_hours: 1 }
+            });
+            assert.ok(!metricsRes.isError);
 
             const { resources } = await client.listResources();
             assert.ok(resources.some((r) => r.uri === "memory://projects"));
@@ -437,5 +476,178 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         const metrics = getTokenMetrics({ timeframe_hours: 1, limit: 10 });
         assert.ok(metrics.total_calls >= 2);
         assert.ok(metrics.tool_breakdown.some((b) => b.tool_name === "search_memory"));
+    });
+
+    it("10. Verifies global knowledge CRUD, FTS search, promote_to_global, and g- prefix routing", () => {
+        const saved = saveGlobalKnowledge({
+            title: "Prisma Neon Connection Pool Architecture",
+            summary: "Use PrismaPg adapter with Neon Serverless driver to prevent connection exhaustion.",
+            category: "pattern",
+            tags: ["database", "prisma", "neon"],
+            tech_stack: "nodejs"
+        });
+        assert.ok(saved.id.startsWith("g-"));
+
+        const searchRes = searchGlobalKnowledge({ query: "adapter neon pool" });
+        assert.ok(searchRes.results.length > 0);
+        assert.equal(searchRes.results[0].id, saved.id);
+
+        const readG = readMemoryNode(null, { id: saved.id, full_content: true });
+        assert.equal(readG.isError, false);
+        assert.match(readG.text, /Prisma Neon Connection Pool/);
+
+        const updateRes = updateMemoryNode(null, {
+            id: saved.id,
+            title: "Updated Prisma Neon Pool"
+        });
+        assert.equal(updateRes.isError, false);
+
+        const projSaved = saveProjectMemory(projectDir, {
+            title: "Docker Multi-Stage NextJS Pattern",
+            summary: "Use standalone output in next.config.js for minimal runner image size.",
+            tags: ["docker", "nextjs"]
+        });
+        const projNodeId = projSaved.results[0].id;
+
+        const promoted = promoteToGlobal(projectDir, {
+            memory_id: projNodeId,
+            tech_stack: "nextjs"
+        });
+        assert.equal(promoted.isError, false);
+        assert.ok(promoted.promoted_id.startsWith("g-"));
+
+        const searchPromoted = searchGlobalKnowledge({ query: "standalone runner" });
+        assert.ok(searchPromoted.results.some((r) => r.id === promoted.promoted_id));
+
+        const delRes = deleteMemoryNode(null, { id: saved.id });
+        assert.equal(delRes.isError, false);
+        const searchAfterDel = searchGlobalKnowledge({ query: "adapter neon pool" });
+        assert.equal(searchAfterDel.results.length, 0);
+    });
+
+    it("11. Verifies dead-end taxonomy, constraints, and reopen_dead_end", () => {
+        const de1 = recordDeadEnd(projectDir, {
+            error_pattern: "SyntaxError: Unexpected token in JSON at position 0",
+            attempted_solution: "Wrapped with try/catch and swallowed error",
+            root_cause: "File was UTF-8 with BOM; needed stripBom",
+            files: ["src/migrate.js"],
+            kind: "error_loop"
+        });
+        assert.equal(de1.kind, "error_loop");
+
+        const de2 = recordDeadEnd(projectDir, {
+            error_pattern: "High read latency on shared global table",
+            attempted_solution: "Add Redis caching cluster",
+            root_cause: "Forbidden by single-binary zero-external-dependency requirement",
+            files: ["src/store.js"],
+            kind: "architectural",
+            constraints: ["Single binary constraint", "Zero external daemon dependencies"]
+        });
+        assert.equal(de2.kind, "architectural");
+
+        const allHits = checkDeadEnds(projectDir, { kind: "all" });
+        assert.ok(allHits.matches.some((m) => m.id === de1.id));
+        assert.ok(allHits.matches.some((m) => m.id === de2.id));
+        assert.match(allHits.text, /\[DEAD-END ERROR LOOP\]/);
+        assert.match(allHits.text, /\[ARCHITECTURAL CONSTRAINT \/ TRADE-OFF\]/);
+
+        const loopHits = checkDeadEnds(projectDir, { kind: "error_loop" });
+        assert.ok(loopHits.matches.every((m) => m.kind === "error_loop"));
+
+        const archHits = checkDeadEnds(projectDir, { kind: "architectural" });
+        assert.ok(archHits.matches.every((m) => m.kind === "architectural"));
+        assert.match(archHits.text, /Single binary constraint/);
+
+        const reopenRes = reopenDeadEnd(projectDir, {
+            id: de2.id,
+            reason: "Client environment explicitly allows local Redis container now"
+        });
+        assert.equal(reopenRes.isError, false);
+
+        const hitsAfterReopen = checkDeadEnds(projectDir, { kind: "architectural" });
+        assert.ok(!hitsAfterReopen.matches.some((m) => m.id === de2.id));
+    });
+
+    it("12. Verifies token budget capping middleware, full_content bypass, and reopen_dead_end via MCP client", async () => {
+        closeAllDatabases();
+        const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: ["--no-warnings", INDEX_JS],
+            env: {
+                ...process.env,
+                AG_MEMORY_DATA_DIR: dataDir,
+                AG_MEMORY_MAX_RESPONSE_TOKENS: "30"
+            },
+            stderr: "pipe"
+        });
+        const client = new Client({ name: "test-client-budget", version: "1.0.0" }, { capabilities: {} });
+
+        await client.connect(transport);
+        try {
+            const longText = "Important concept. ".repeat(40);
+            await client.callTool({
+                name: "save_project_memory",
+                arguments: {
+                    project_path: projectDir,
+                    slug: "long-architecture-spec",
+                    title: "Long Architecture Spec",
+                    summary: longText,
+                    category: "architecture"
+                }
+            });
+
+            const readCapped = await client.callTool({
+                name: "read_memory_node",
+                arguments: {
+                    project_path: projectDir,
+                    id: "long-architecture-spec",
+                    full_content: false
+                }
+            });
+            assert.ok(!readCapped.isError);
+            assert.match(readCapped.content[0].text, /\[TRUNCATED: Output exceeded token budget/);
+
+            const readFull = await client.callTool({
+                name: "read_memory_node",
+                arguments: {
+                    project_path: projectDir,
+                    id: "long-architecture-spec",
+                    full_content: true
+                }
+            });
+            assert.ok(!readFull.isError);
+            assert.ok(!readFull.content[0].text.includes("[TRUNCATED: Output exceeded token budget"));
+
+            const recDeRes = await client.callTool({
+                name: "record_dead_end",
+                arguments: {
+                    project_path: projectDir,
+                    error_pattern: "OOM on large CSV import",
+                    attempted_solution: "Load entire 10GB file into V8 buffer",
+                    root_cause: "V8 heap exhausted; must use streaming pipeline",
+                    kind: "architectural",
+                    constraints: ["Max memory 512MB"]
+                }
+            });
+            assert.ok(!recDeRes.isError);
+            assert.match(recDeRes.content[0].text, /architectural constraint/);
+
+            const deIdMatch = recDeRes.content[0].text.match(/ID: (de-[a-f0-9]+)/);
+            assert.ok(deIdMatch);
+            const deId = deIdMatch[1];
+
+            const reopenRes = await client.callTool({
+                name: "reopen_dead_end",
+                arguments: {
+                    project_path: projectDir,
+                    id: deId,
+                    reason: "Switched to 64-bit high-memory runner machine"
+                }
+            });
+            assert.ok(!reopenRes.isError);
+            assert.match(reopenRes.content[0].text, /Reopened dead-end/);
+        } finally {
+            await client.close();
+        }
     });
 });

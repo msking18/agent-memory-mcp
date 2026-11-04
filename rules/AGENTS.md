@@ -1,10 +1,10 @@
-### Rule: Universal Project Memory & Bootstrapping (v3.0)
-You act as the persistent intelligence for the active project workspace via `agent-memory-mcp`.
+### Rule: Universal Project Memory & Bootstrapping (v3.1)
+You act as the persistent intelligence for the active project workspace and cross-project knowledge via `agent-memory-mcp`.
 
-1. **Workspace Guard (Skip When No Project Is Open):**
-   - Only run `agent-memory-mcp` tools when an active project workspace directory is open (or when the user explicitly provides a project directory to work on).
+1. **Workspace Guard & Global Scoping:**
+   - Run project-scoped tools (`check_memory_status`, `save_project_memory`, `search_project_memory`, etc.) with an **absolute** `project_path`.
+   - Global knowledge tools (`search_global_knowledge`, `save_global_knowledge`, `get_token_metrics`) do not require a project path and query the machine-wide `~/.ag-memory-mcp/global.db`.
    - If there is no active workspace, or if the user asks a standalone question / reviews tooling outside a project codebase, skip project memory calls completely.
-   - Always pass an **absolute** directory path as `project_path` (never `"./"`).
 
 2. **Startup Check & Zero-Turn Auto-Hydration:**
    - If the `SessionStart` hook already injected `[AGENT-MEMORY AUTO-HYDRATED]` for the active workspace, **do NOT redundantly re-run** `check_memory_status` or `get_session_timeline`—proceed directly to task-specific retrieval.
@@ -22,18 +22,27 @@ You act as the persistent intelligence for the active project workspace via `age
      - **Notify User:** Output `"I have initialized the project memory for this [insert tech stack] project,"` then proceed with their task.
 
 4. **Task & File-Anchored Retrieval:**
-   - Use `search_project_memory` (FTS5 ranked search across titles, tags, files, and summaries) and `read_memory_node` (`ids: [...]` batch supported) to load relevant context before modifying code.
+   - Use `search_project_memory` (FTS5 ranked search across titles, tags, files, and summaries) and `read_memory_node` (`ids: [...]` batch supported, including `"g-..."` global IDs) to load relevant context before modifying code.
    - Before modifying any core utility, hook, or shared component, call `get_file_memories` with the target `file_paths` to surface anchored architectural invariants and past dead-ends.
+   - When adopting a library or diagnosing third-party framework quirks, search machine-wide memory via `search_global_knowledge` with the tech stack name.
    - If `read_memory_node` emits a `[STALE WARNING]`, verify the note against current code on disk and update it if needed.
 
-5. **Continuous Learning & Clean Lifecycle:**
+5. **Continuous Learning & Global Promotion:**
    - When you implement a new architectural pattern, add a database table, integrate/replace a core library, or change build steps, update the existing node via `save_project_memory` (using its `id` or canonical `slug`) or `update_memory_node`—never leave contradictory duplicate architectural nodes behind. Use `delete_memory_node` to archive obsolete notes.
+   - When a project-specific solution or architectural pattern proves broadly reusable across projects, promote it to the machine-wide global knowledge graph via `promote_to_global`.
 
-### Rule: Session Timelines & Anti-Looping (v3.0)
-1. **Anti-Loop Dead-End Checks & Recording:**
+### Rule: Session Timelines & Anti-Looping (v3.1)
+1. **Anti-Loop Dead-End Checks & Taxonomy:**
    - Review the recent session timeline and active dead-ends at task start so you never repeat completed tasks or re-attempt failed fixes.
    - Before retrying a compiler error, test failure, or unexpected runtime bug, call `check_dead_ends` with the error pattern or file path.
-   - Whenever an attempted fix fails (and especially before stopping on the 3-Strike Rule), call `record_dead_end` with `error_pattern`, `attempted_solution`, `root_cause`, and `files` so future turns and sessions never repeat that dead-end.
+   - Whenever an attempted fix fails (and especially before stopping on the 3-Strike Rule), call `record_dead_end` with:
+     - `error_pattern`: The exact compiler error, test failure, or symptom.
+     - `attempted_solution`: What was tried and failed.
+     - `root_cause`: Why it failed.
+     - `files`: Workspace-relative paths involved.
+     - `kind`: `"error_loop"` for code/test bug fixes, or `"architectural"` for intentional architectural constraints / rejected trade-offs.
+     - `constraints`: Invariants or preconditions forbidding this approach.
+   - If external dependencies, platform versions, or requirements change such that a previous dead-end is now viable, call `reopen_dead_end` with the record ID and reason.
 
 2. **End of Task / Implementation Plan Session Log:**
    - Before completing a project coding task or implementation plan (ask the user if unsure whether the task is complete), call `save_project_memory` with:

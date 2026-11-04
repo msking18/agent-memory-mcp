@@ -1,7 +1,7 @@
 {
   "name": "agent-memory",
   "displayName": "Agent Memory",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Persistent per-project SQLite + FTS5 memory, file-anchored architectural invariants, zero-turn startup hydration, and anti-loop dead-end tracking.",
   "logo": "assets/logo.svg",
   "author": "Manveer Singh Kahlon",

@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+/**
+ * @file src/session-start-hook.js
+ * @description Google Antigravity SessionStart lifecycle hook.
+ * Inspects open workspace directories on editor startup and injects pre-hydrated
+ * memory context and session timelines directly into the initial system prompt.
+ */
+
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkMemoryStatus } from "./store.js";

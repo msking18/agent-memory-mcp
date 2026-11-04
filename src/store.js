@@ -4,7 +4,8 @@ import crypto from "node:crypto";
 import {
     getProjectStoreInfo,
     registerProjectInIndex,
-    normalizeWorkspaceRelativePath
+    normalizeWorkspaceRelativePath,
+    loadConfig
 } from "./paths.js";
 import {
     openDatabase,
@@ -12,7 +13,10 @@ import {
     syncMemoryFts,
     removeMemoryFts,
     safeJsonArray,
-    searchFts
+    searchFts,
+    openGlobalDatabase,
+    logTokenAudit,
+    queryTokenMetrics
 } from "./db.js";
 import { ensureMigratedIfLegacyExists } from "./migrate.js";
 
@@ -1069,4 +1073,76 @@ export function getFileMemories(
         deadEnds: matchedDeadEnds,
         text: banner + out.join("\n")
     };
+}
+
+
+export function estimateTokens(str) {
+    if (!str || typeof str !== "string") return 0;
+    return Math.ceil(str.length / 3.8);
+}
+
+export function trimToSentenceBoundary(text, maxChars) {
+    if (text.length <= maxChars) return text;
+    const slice = text.slice(0, maxChars);
+    const lastBoundary = Math.max(
+        slice.lastIndexOf("\n\n"),
+        slice.lastIndexOf("\n"),
+        slice.lastIndexOf(". "),
+        slice.lastIndexOf("! "),
+        slice.lastIndexOf("? ")
+    );
+    if (lastBoundary > maxChars * 0.6) {
+        return slice.slice(0, lastBoundary + 1).trim();
+    }
+    return slice.trim();
+}
+
+export function applyTokenBudget(rawText, toolName, projectPath = null, options = {}) {
+    const config = loadConfig();
+    const maxTokens = typeof options.maxTokens === "number" ? options.maxTokens : config.max_response_tokens;
+    const bypass = options.bypass === true || maxTokens === 0;
+
+    const rawTokenEst = estimateTokens(rawText);
+    const inputTokenEst = typeof options.inputTokens === "number" ? options.inputTokens : 50;
+
+    let budgetedText = rawText;
+    let truncated = false;
+
+    if (!bypass && rawTokenEst > maxTokens) {
+        const targetChars = Math.floor(maxTokens * 3.8);
+        const trimmed = trimToSentenceBoundary(rawText, targetChars);
+        budgetedText = `${trimmed}\n\n[TRUNCATED: Output exceeded token budget of ~${maxTokens} tokens (~${rawTokenEst} raw tokens). Configure max_response_tokens in ~/.ag-memory-mcp/config.json or pass full_content: true / bypass]`;
+        truncated = true;
+    }
+
+    const budgetedTokenEst = estimateTokens(budgetedText);
+
+    if (config.enable_audit_logging) {
+        try {
+            const globalDb = openGlobalDatabase();
+            logTokenAudit(globalDb, {
+                timestamp: new Date().toISOString(),
+                tool_name: toolName,
+                project_path: projectPath,
+                input_tokens: inputTokenEst,
+                output_tokens_raw: rawTokenEst,
+                output_tokens_budgeted: budgetedTokenEst,
+                truncated: truncated ? 1 : 0
+            }, config.max_audit_log_entries);
+        } catch {
+            // Non-blocking error handling for audit logging
+        }
+    }
+
+    return {
+        text: budgetedText,
+        rawTokens: rawTokenEst,
+        budgetedTokens: budgetedTokenEst,
+        truncated
+    };
+}
+
+export function getTokenMetrics({ timeframe_hours = 24, limit = 50 } = {}) {
+    const globalDb = openGlobalDatabase();
+    return queryTokenMetrics(globalDb, { timeframeHours: timeframe_hours, limit });
 }

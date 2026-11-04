@@ -21,7 +21,10 @@ import {
     deleteMemoryNode,
     recordDeadEnd,
     checkDeadEnds,
-    getFileMemories
+    getFileMemories,
+    estimateTokens,
+    applyTokenBudget,
+    getTokenMetrics
 } from "../src/store.js";
 import { runSessionStartPayload } from "../src/session-start-hook.js";
 
@@ -415,5 +418,24 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         const metrics = queryTokenMetrics(globalDb, { timeframeHours: 1, limit: 10 });
         assert.equal(metrics.recent_logs.length, 3);
         assert.equal(metrics.total_calls, 3);
+    });
+
+    it("9. Verifies token estimation, sentence-boundary budget trimming, and getTokenMetrics", () => {
+        assert.equal(estimateTokens(""), 0);
+        assert.equal(estimateTokens("1234"), 2); // 4 / 3.8 = 1.05 -> ceil = 2
+
+        const shortText = "Short response within budget.";
+        const budgetUnder = applyTokenBudget(shortText, "check_status", projectDir, { maxTokens: 100 });
+        assert.equal(budgetUnder.truncated, false);
+        assert.equal(budgetUnder.text, shortText);
+
+        const longText = "First sentence. " + "Middle sentence. ".repeat(30) + "Final sentence.";
+        const budgetOver = applyTokenBudget(longText, "search_memory", projectDir, { maxTokens: 20 });
+        assert.equal(budgetOver.truncated, true);
+        assert.match(budgetOver.text, /\[TRUNCATED: Output exceeded token budget/);
+
+        const metrics = getTokenMetrics({ timeframe_hours: 1, limit: 10 });
+        assert.ok(metrics.total_calls >= 2);
+        assert.ok(metrics.tool_breakdown.some((b) => b.tool_name === "search_memory"));
     });
 });

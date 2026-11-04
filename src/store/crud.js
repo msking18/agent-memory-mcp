@@ -99,8 +99,8 @@ export function saveProjectMemory(
         );
         const findByIdStmt = db.prepare("SELECT * FROM memories WHERE id = ?");
         const insertRevStmt = db.prepare(`
-            INSERT INTO revisions (id, memory_id, version, title, summary, category, tags_json, files_json, metadata_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memory_revisions (memory_id, prev_title, prev_summary, prev_tags_json, changed_at)
+            VALUES (?, ?, ?, ?, ?)
         `);
         const updateStmt = db.prepare(`
             UPDATE memories
@@ -110,9 +110,9 @@ export function saveProjectMemory(
         const insertStmt = db.prepare(`
             INSERT INTO memories (
                 id, slug, title, summary, category, tags_json, files_json,
-                source, status, metadata_json, created_at, updated_at
+                status, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', 'active', '{}', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
         `);
 
         for (const item of itemsToSave) {
@@ -138,18 +138,12 @@ export function saveProjectMemory(
                 entryId = targetRecord.id;
                 action = "updated";
 
-                const revId = crypto.randomUUID();
                 insertRevStmt.run(
-                    revId,
                     targetRecord.id,
-                    1,
                     targetRecord.title,
                     targetRecord.summary,
-                    targetRecord.category,
                     targetRecord.tags_json,
-                    targetRecord.files_json,
-                    targetRecord.metadata_json || "{}",
-                    targetRecord.updated_at
+                    now
                 );
 
                 updateStmt.run(

@@ -46,6 +46,7 @@ function migrateDeadEndsTable(db) {
             db.exec(`UPDATE dead_ends SET updated_at = created_at WHERE updated_at IS NULL`);
         }
         db.exec(`CREATE INDEX IF NOT EXISTS idx_dead_ends_kind ON dead_ends(kind)`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_dead_ends_status ON dead_ends(status)`);
 
         const memCols = db.prepare(`PRAGMA table_info(memories)`).all();
         const memColNames = new Set(memCols.map((c) => c.name));

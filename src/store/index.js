@@ -167,7 +167,7 @@ export function readMemoryNode(
     const getDeStmt = db ? db.prepare("SELECT * FROM dead_ends WHERE id = ?") : null;
     const getRevsStmt = db
         ? db.prepare(
-              "SELECT id, memory_id, version, title, summary, category, tags_json, files_json, created_at FROM revisions WHERE memory_id = ? ORDER BY version DESC LIMIT 5"
+              "SELECT rev_id, prev_title, prev_summary, changed_at FROM memory_revisions WHERE memory_id = ? ORDER BY rev_id DESC LIMIT 5"
           )
         : null;
 
@@ -249,7 +249,7 @@ export function readMemoryNode(
                 if (revs.length > 0) {
                     lines.push("\n--- Prior Revisions ---");
                     for (const r of revs) {
-                        lines.push(`[${r.created_at}] ${r.title}: ${smartPreview(r.summary, 200)}`);
+                        lines.push(`[${r.changed_at}] ${r.prev_title}: ${smartPreview(r.prev_summary, 200)}`);
                     }
                 }
             }
@@ -346,22 +346,10 @@ export function updateMemoryNode(
 
     withTransaction(db, () => {
         if (nextTitle !== existing.title || nextSummary !== existing.summary) {
-            const revId = crypto.randomUUID();
             db.prepare(`
-                INSERT INTO revisions (id, memory_id, version, title, summary, category, tags_json, files_json, metadata_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-                revId,
-                existing.id,
-                1,
-                existing.title,
-                existing.summary,
-                existing.category,
-                existing.tags_json,
-                existing.files_json,
-                existing.metadata_json || "{}",
-                existing.updated_at
-            );
+                INSERT INTO memory_revisions (memory_id, prev_title, prev_summary, prev_tags_json, changed_at)
+                VALUES (?, ?, ?, ?, ?)
+            `).run(existing.id, existing.title, existing.summary, existing.tags_json, now);
         }
 
         db.prepare(`
@@ -420,7 +408,7 @@ export function deleteMemoryNode(projectPath, { id, hard_delete = false }) {
         withTransaction(db, () => {
             removeMemoryFts(db, mem.id);
             if (hard_delete) {
-                db.prepare("DELETE FROM revisions WHERE memory_id = ?").run(mem.id);
+                db.prepare("DELETE FROM memory_revisions WHERE memory_id = ?").run(mem.id);
                 db.prepare("DELETE FROM memories WHERE id = ?").run(mem.id);
             } else {
                 db.prepare(

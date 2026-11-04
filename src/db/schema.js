@@ -5,60 +5,50 @@
  * databases and the centralized global knowledge graph.
  */
 
+export const SCHEMA_VERSION = "3.1.0";
+
 /**
  * SQLite DDL schema for per-project databases (`project-*.db`).
- * Includes:
- * - `memories`: Primary storage for architecture, decisions, and session logs.
- * - `memories_fts`: FTS5 full-text search index with Porter stemming and BM25 ranking.
- * - `revisions`: Historical version archives for rollbacks and audit trails.
- * - `dead_ends`: Two-tier registry for failed debugging attempts and architectural constraints.
- * - `migrations`: Migration audit ledger.
  */
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
-    slug TEXT UNIQUE,
+    slug TEXT,
     title TEXT NOT NULL,
     summary TEXT NOT NULL,
-    category TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'note',
     tags_json TEXT NOT NULL DEFAULT '[]',
     files_json TEXT NOT NULL DEFAULT '[]',
-    source TEXT NOT NULL DEFAULT 'manual',
     status TEXT NOT NULL DEFAULT 'active',
     superseded_by TEXT,
-    metadata_json TEXT NOT NULL DEFAULT '{}',
+    legacy_meta_json TEXT,
+    embedding BLOB NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
-CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
-CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_status_cat_updated
+    ON memories(status, category, updated_at DESC);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-    id UNINDEXED,
-    title,
-    summary,
-    tags,
-    files,
-    tokenize='porter unicode61'
-);
+CREATE INDEX IF NOT EXISTS idx_memories_slug
+    ON memories(slug) WHERE slug IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS revisions (
-    id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS memory_revisions (
+    rev_id INTEGER PRIMARY KEY AUTOINCREMENT,
     memory_id TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    category TEXT NOT NULL,
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    files_json TEXT NOT NULL DEFAULT '[]',
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+    prev_title TEXT,
+    prev_summary TEXT,
+    prev_tags_json TEXT,
+    changed_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_revisions_memory_id ON revisions(memory_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_revisions_memory_id
+    ON memory_revisions(memory_id, rev_id DESC);
 
 CREATE TABLE IF NOT EXISTS dead_ends (
     id TEXT PRIMARY KEY,
@@ -66,31 +56,33 @@ CREATE TABLE IF NOT EXISTS dead_ends (
     attempted_solution TEXT NOT NULL,
     root_cause TEXT NOT NULL,
     files_json TEXT NOT NULL DEFAULT '[]',
-    kind TEXT NOT NULL DEFAULT 'error_loop',
-    constraints_json TEXT NOT NULL DEFAULT '[]',
-    status TEXT NOT NULL DEFAULT 'active',
-    reopened_reason TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_dead_ends_status ON dead_ends(status);
-CREATE INDEX IF NOT EXISTS idx_dead_ends_kind ON dead_ends(kind);
-CREATE INDEX IF NOT EXISTS idx_dead_ends_created_at ON dead_ends(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dead_ends_created
+    ON dead_ends(created_at DESC);
 
-CREATE TABLE IF NOT EXISTS migrations (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    applied_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS migration_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_path TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    entry_count INTEGER NOT NULL,
+    backup_path TEXT NOT NULL,
+    migrated_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    id UNINDEXED,
+    title,
+    tags_text,
+    files_text,
+    summary,
+    tokenize='porter unicode61'
 );
 `;
 
 /**
  * SQLite DDL schema for the centralized machine-wide global knowledge graph (`global.db`).
- * Includes:
- * - `global_memories`: Machine-wide patterns, conventions, and library quirks.
- * - `global_memories_fts`: FTS5 virtual table for BM25-ranked global search.
- * - `token_audit_log`: Audit log tracking token budget capping efficiency.
  */
 export const GLOBAL_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS global_memories (
@@ -105,16 +97,15 @@ CREATE TABLE IF NOT EXISTS global_memories (
     updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_global_memories_category ON global_memories(category);
-CREATE INDEX IF NOT EXISTS idx_global_memories_tech_stack ON global_memories(tech_stack);
-CREATE INDEX IF NOT EXISTS idx_global_memories_updated_at ON global_memories(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_global_cat_stack_updated
+    ON global_memories(category, tech_stack, updated_at DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS global_memories_fts USING fts5(
     id UNINDEXED,
     title,
-    summary,
     tags,
     tech_stack,
+    summary,
     tokenize='porter unicode61'
 );
 
@@ -129,6 +120,9 @@ CREATE TABLE IF NOT EXISTS token_audit_log (
     truncated INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_token_audit_tool ON token_audit_log(tool_name);
-CREATE INDEX IF NOT EXISTS idx_token_audit_timestamp ON token_audit_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_token_audit_time
+    ON token_audit_log(timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_token_audit_tool
+    ON token_audit_log(tool_name, timestamp DESC);
 `;

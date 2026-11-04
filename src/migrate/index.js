@@ -106,9 +106,9 @@ function runInitialTransactionalMigration(storeInfo, entries, sourceSha256) {
             CREATE VIRTUAL TABLE memories_fts USING fts5(
                 id UNINDEXED,
                 title,
+                tags_text,
+                files_text,
                 summary,
-                tags,
-                files,
                 tokenize='porter unicode61'
             );
             CREATE TABLE migration_audit (
@@ -278,8 +278,8 @@ export function migrateLegacyJsonToSqlite(storeInfo) {
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `);
             const insertRevisionStmt = liveDb.prepare(`
-                INSERT INTO revisions (id, memory_id, version, title, summary, category, tags_json, files_json, metadata_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO memory_revisions (memory_id, prev_title, prev_summary, prev_tags_json, changed_at)
+                VALUES (?, ?, ?, ?, ?)
             `);
 
             for (const e of entries) {
@@ -316,17 +316,11 @@ export function migrateLegacyJsonToSqlite(storeInfo) {
                     syncMemoryFts(liveDb, e);
                     insertedCount++;
                 } else if (existing.summary !== e.summary || existing.title !== e.title) {
-                    const revId = crypto.randomUUID();
                     insertRevisionStmt.run(
-                        revId,
                         existing.id,
-                        1,
                         e.title,
                         e.summary,
-                        e.category,
                         JSON.stringify(e.tags),
-                        JSON.stringify(e.files),
-                        "{}",
                         e.created_at
                     );
                     divergentRevisionsCount++;

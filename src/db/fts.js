@@ -43,23 +43,25 @@ export function syncMemoryFts(db, memory) {
     let tagsStr = "";
     let filesStr = "";
     try {
-        const tags = JSON.parse(memory.tags_json || "[]");
-        tagsStr = (Array.isArray(tags) ? tags.join(" ") : "") + " " + (Array.isArray(tags) ? tags.join(" ") : "");
+        const tags = Array.isArray(memory.tags) ? memory.tags : JSON.parse(memory.tags_json || "[]");
+        tagsStr = Array.isArray(tags) ? tags.join(" ") : "";
     } catch {
         tagsStr = "";
     }
     try {
-        const files = JSON.parse(memory.files_json || "[]");
+        const files = Array.isArray(memory.files) ? memory.files : JSON.parse(memory.files_json || "[]");
         filesStr = Array.isArray(files) ? files.join(" ") : "";
     } catch {
         filesStr = "";
     }
 
     db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(memory.id);
+    if (memory.status === "archived") return;
+
     db.prepare(`
-        INSERT INTO memories_fts (id, title, summary, tags, files)
+        INSERT INTO memories_fts (id, title, tags_text, files_text, summary)
         VALUES (?, ?, ?, ?, ?)
-    `).run(memory.id, memory.title, memory.summary, tagsStr, filesStr);
+    `).run(memory.id, memory.title || "", tagsStr, filesStr, memory.summary || "");
 }
 
 /**
@@ -74,7 +76,6 @@ export function removeMemoryFts(db, id) {
 
 /**
  * Performs BM25 ranked full-text search against project memories.
- * Attempts an AND match first, falling back to an OR match if no results are found.
  *
  * @param {import("node:sqlite").DatabaseSync} db - Active SQLite database connection.
  * @param {string} query - Raw search query string.
@@ -99,8 +100,8 @@ export function searchFts(db, query, { category, limit = 10 } = {}) {
             m.status,
             m.created_at,
             m.updated_at,
-            bm25(memories_fts, 5.0, 1.0, 4.0, 2.0) AS score,
-            snippet(memories_fts, 2, '<b>', '</b>', '...', 32) AS match_snippet
+            bm25(memories_fts, 0.0, 5.0, 4.0, 3.0, 1.0) AS score,
+            snippet(memories_fts, 4, '[', ']', '...', 24) AS match_snippet
         FROM memories_fts fts
         JOIN memories m ON m.id = fts.id
         WHERE memories_fts MATCH ?

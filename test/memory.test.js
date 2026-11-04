@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import { closeAllDatabases } from "../src/db.js";
-import { validateProjectPath, getProjectStoreInfo } from "../src/paths.js";
+import { validateProjectPath, getProjectStoreInfo, getGlobalDbPath, getConfigPath, loadConfig } from "../src/paths.js";
 import {
     checkMemoryStatus,
     getSessionTimeline,
@@ -42,6 +42,14 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         fs.mkdirSync(path.join(projectDir, "src", "lib"), { recursive: true });
         fs.writeFileSync(path.join(projectDir, "src", "lib", "auth.ts"), "export const auth = true;\n");
         process.env.AG_MEMORY_DATA_DIR = dataDir;
+
+        assert.equal(getGlobalDbPath(), path.join(dataDir, "global.db"));
+        assert.equal(getConfigPath(), path.join(dataDir, "config.json"));
+
+        const defaultConfig = loadConfig();
+        assert.equal(defaultConfig.max_response_tokens, 1000);
+        assert.equal(defaultConfig.enable_audit_logging, true);
+        assert.equal(defaultConfig.max_audit_log_entries, 2000);
     });
 
     afterEach(() => {

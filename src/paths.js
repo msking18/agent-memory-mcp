@@ -31,6 +31,54 @@ export function getProjectsIndexPath() {
     return path.join(getStoresDir(), "projects_index.json");
 }
 
+export function getGlobalDbPath() {
+    return path.join(getDataRoot(), "global.db");
+}
+
+export function getConfigPath() {
+    return path.join(getDataRoot(), "config.json");
+}
+
+export const DEFAULT_CONFIG = {
+    max_response_tokens: 1000,
+    enable_audit_logging: true,
+    max_audit_log_entries: 2000
+};
+
+export function loadConfig() {
+    const configPath = getConfigPath();
+    let fileConfig = {};
+    try {
+        if (fs.existsSync(configPath)) {
+            const raw = fs.readFileSync(configPath, "utf8");
+            fileConfig = JSON.parse(raw);
+        }
+    } catch {
+        fileConfig = {};
+    }
+
+    const envTokens = process.env.AG_MEMORY_MAX_RESPONSE_TOKENS
+        ? parseInt(process.env.AG_MEMORY_MAX_RESPONSE_TOKENS, 10)
+        : null;
+
+    return {
+        max_response_tokens:
+            !isNaN(envTokens) && envTokens !== null
+                ? envTokens
+                : typeof fileConfig.max_response_tokens === "number"
+                ? fileConfig.max_response_tokens
+                : DEFAULT_CONFIG.max_response_tokens,
+        enable_audit_logging:
+            typeof fileConfig.enable_audit_logging === "boolean"
+                ? fileConfig.enable_audit_logging
+                : DEFAULT_CONFIG.enable_audit_logging,
+        max_audit_log_entries:
+            typeof fileConfig.max_audit_log_entries === "number"
+                ? fileConfig.max_audit_log_entries
+                : DEFAULT_CONFIG.max_audit_log_entries
+    };
+}
+
 /**
  * Cleans optional file:// URI wrappers while keeping relative paths un-resolved
  * so we can explicitly reject './' or relative strings.

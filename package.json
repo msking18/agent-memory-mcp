@@ -1,11 +1,11 @@
 {
-  "name": "agent-memory-mcp",
+  "name": "@getsugatension/agent-memory-mcp",
   "version": "3.1.0",
   "type": "module",
   "description": "Persistent per-project SQLite + FTS5 architectural memory, file-anchored invariants, and anti-loop dead-end tracking for AI coding agents via MCP",
   "main": "index.js",
   "bin": {
-    "agent-memory-mcp": "./index.js"
+    "agent-memory-mcp": "index.js"
   },
   "files": [
     "index.js",

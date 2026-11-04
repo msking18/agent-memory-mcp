@@ -139,7 +139,7 @@ export AG_MEMORY_MAX_RESPONSE_TOKENS=4000
 ### 1. Claude Code
 Add to your Claude Code configuration with one command:
 ```bash
-claude mcp add agent-memory-mcp -- npx -y agent-memory-mcp
+claude mcp add agent-memory-mcp -- npx -y @getsugatension/agent-memory-mcp
 ```
 
 ### 2. Cursor / Windsurf / Cline
@@ -149,7 +149,7 @@ Add to your `mcpServers` configuration (e.g. `~/.cursor/mcp.json` or cline setti
   "mcpServers": {
     "agent-memory-mcp": {
       "command": "npx",
-      "args": ["-y", "agent-memory-mcp"]
+      "args": ["-y", "@getsugatension/agent-memory-mcp"]
     }
   }
 }

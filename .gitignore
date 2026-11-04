@@ -1,5 +1,12 @@
 node_modules/
 stores/
 backups/
+*.db
+*.db-*
+*.db-wal
+*.db-shm
+*.db-journal
+global.db*
+config.json
 *.tmp*
 *.lock

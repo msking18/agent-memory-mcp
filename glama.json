@@ -1,0 +1,8 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "name": "@getsugatension/agent-memory-mcp",
+  "description": "Persistent per-project SQLite + FTS5 architectural memory, file-anchored invariants, and anti-loop dead-end tracking for AI coding agents via MCP",
+  "maintainers": [
+    "msking18"
+  ]
+}

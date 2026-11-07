@@ -102,6 +102,22 @@ export function openGlobalDatabase() {
     db.exec(`PRAGMA synchronous = NORMAL;`);
     db.exec(GLOBAL_SCHEMA_SQL);
 
+    try {
+        const ftsCols = db.prepare(`PRAGMA table_info(global_memories_fts)`).all();
+        const colNames = new Set(ftsCols.map((c) => c.name));
+        if (!colNames.has("tags")) {
+            db.exec(`DROP TABLE IF EXISTS global_memories_fts;`);
+            db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS global_memories_fts USING fts5(
+                id UNINDEXED,
+                title,
+                tags,
+                tech_stack,
+                summary,
+                tokenize='porter unicode61'
+            );`);
+        }
+    } catch {}
+
     dbConnections.set(globalDbPath, db);
     return db;
 }

@@ -19,6 +19,7 @@ import {
     getFileMemories
 } from "../store/index.js";
 import {
+    executeTool,
     wrapHandler,
     READ_ONLY_ANNOTATIONS,
     WRITE_ANNOTATIONS,
@@ -59,14 +60,14 @@ export function registerProjectTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler(
-            (args) =>
+        async (args) => {
+            return executeTool("check_memory_status", args, () =>
                 checkMemoryStatus(args.project_path, {
                     include_timeline: args.include_timeline,
                     timeline_limit: args.timeline_limit
-                }),
-            "check_memory_status"
-        )
+                })
+            );
+        }
     );
 
     // 2. get_session_timeline
@@ -89,16 +90,16 @@ export function registerProjectTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler(
-            (args) =>
+        async (args) => {
+            return executeTool("get_session_timeline", args, () =>
                 getSessionTimeline(args.project_path, {
                     category: args.category,
                     tag: args.tag,
                     since: args.since,
                     limit: args.limit
-                }),
-            "get_session_timeline"
-        )
+                })
+            );
+        }
     );
 
     // 3. save_project_memory
@@ -139,7 +140,11 @@ export function registerProjectTools(server) {
             },
             annotations: WRITE_ANNOTATIONS
         },
-        wrapHandler((args) => saveProjectMemory(args.project_path, args), "save_project_memory")
+        async (args) => {
+            return executeTool("save_project_memory", args, () =>
+                saveProjectMemory(args.project_path, args)
+            );
+        }
     );
 
     // 4. search_project_memory
@@ -160,15 +165,15 @@ export function registerProjectTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler(
-            (args) =>
+        async (args) => {
+            return executeTool("search_project_memory", args, () =>
                 searchProjectMemory(args.project_path, {
                     query: args.query,
                     category: args.category,
                     limit: args.limit
-                }),
-            "search_project_memory"
-        )
+                })
+            );
+        }
     );
 
     // 5. read_memory_node
@@ -195,16 +200,16 @@ export function registerProjectTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler(
-            (args) =>
+        async (args) => {
+            return executeTool("read_memory_node", args, () =>
                 readMemoryNode(args.project_path, {
                     id: args.id,
                     ids: args.ids,
                     include_revisions: args.include_revisions,
                     full_content: args.full_content
-                }),
-            "read_memory_node"
-        )
+                })
+            );
+        }
     );
 
     // 6. update_memory_node
@@ -226,7 +231,11 @@ export function registerProjectTools(server) {
             },
             annotations: WRITE_ANNOTATIONS
         },
-        wrapHandler((args) => updateMemoryNode(args.project_path, args), "update_memory_node")
+        async (args) => {
+            return executeTool("update_memory_node", args, () =>
+                updateMemoryNode(args.project_path, args)
+            );
+        }
     );
 
     // 7. delete_memory_node
@@ -252,7 +261,11 @@ export function registerProjectTools(server) {
                 openWorldHint: false
             }
         },
-        wrapHandler((args) => deleteMemoryNode(args.project_path, args), "delete_memory_node")
+        async (args) => {
+            return executeTool("delete_memory_node", args, () =>
+                deleteMemoryNode(args.project_path, args)
+            );
+        }
     );
 
     // 8. record_dead_end
@@ -294,7 +307,11 @@ export function registerProjectTools(server) {
             },
             annotations: WRITE_ANNOTATIONS
         },
-        wrapHandler((args) => recordDeadEnd(args.project_path, args), "record_dead_end")
+        async (args) => {
+            return executeTool("record_dead_end", args, () =>
+                recordDeadEnd(args.project_path, args)
+            );
+        }
     );
 
     // 9. check_dead_ends
@@ -320,7 +337,11 @@ export function registerProjectTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler((args) => checkDeadEnds(args.project_path, args), "check_dead_ends")
+        async (args) => {
+            return executeTool("check_dead_ends", args, () =>
+                checkDeadEnds(args.project_path, args)
+            );
+        }
     );
 
     // 10. get_file_memories
@@ -340,6 +361,10 @@ export function registerProjectTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler((args) => getFileMemories(args.project_path, args), "get_file_memories")
+        async (args) => {
+            return executeTool("get_file_memories", args, () =>
+                getFileMemories(args.project_path, args)
+            );
+        }
     );
 }

@@ -24,7 +24,7 @@ const SERVER_INSTRUCTIONS = `agent-memory-mcp (v3.1) provides persistent per-pro
  */
 export function createMcpServer() {
     const server = new McpServer(
-        { name: "agent-memory-mcp", version: "3.1.0" },
+        { name: "agent-memory-mcp", version: "3.2.0" },
         { instructions: SERVER_INSTRUCTIONS }
     );
 
@@ -73,6 +73,6 @@ export async function startStdioServer() {
     process.once("exit", () => closeAllDatabases());
 
     await server.connect(transport);
-    console.error("agent-memory-mcp v3.1.0 (SQLite + FTS5) running on stdio");
+    console.error("agent-memory-mcp v3.2.0 (SQLite + FTS5) running on stdio");
     return server;
 }

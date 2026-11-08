@@ -348,13 +348,20 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
             const statusTool = tools.find((t) => t.name === "check_memory_status");
             assert.equal(statusTool?.annotations?.readOnlyHint, true);
 
+            const statusRes = await client.callTool({
+                name: "check_memory_status",
+                arguments: { project_path: projectDir }
+            });
+            assert.ok(!statusRes.isError);
+
             const saveRes = await client.callTool({
                 name: "save_project_memory",
                 arguments: {
                     project_path: projectDir,
                     title: "Tech Stack & Ecosystem",
                     summary: "Hono + Cloudflare Workers",
-                    tags: ["architecture"]
+                    tags: ["architecture"],
+                    files: ["src/lib/auth.ts"]
                 }
             });
             assert.ok(!saveRes.isError);
@@ -369,6 +376,92 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
             });
             assert.ok(!searchRes.isError);
             assert.match(searchRes.content[0].text, /Hono/);
+
+            const readRes = await client.callTool({
+                name: "read_memory_node",
+                arguments: {
+                    project_path: projectDir,
+                    id: "tech-stack"
+                }
+            });
+            assert.ok(!readRes.isError);
+            assert.match(readRes.content[0].text, /Hono \+ Cloudflare Workers/);
+
+            const timelineRes = await client.callTool({
+                name: "get_session_timeline",
+                arguments: {
+                    project_path: projectDir,
+                    category: "all"
+                }
+            });
+            assert.ok(!timelineRes.isError);
+            assert.match(timelineRes.content[0].text, /Tech Stack & Ecosystem/);
+
+            const updateRes = await client.callTool({
+                name: "update_memory_node",
+                arguments: {
+                    project_path: projectDir,
+                    id: "tech-stack",
+                    summary: "Hono + Cloudflare Workers + SQLite"
+                }
+            });
+            assert.ok(!updateRes.isError);
+
+            const deadEndRes = await client.callTool({
+                name: "record_dead_end",
+                arguments: {
+                    project_path: projectDir,
+                    error_pattern: "Fetch API timeout",
+                    attempted_solution: "Set timeout to 0",
+                    root_cause: "Never finishes; must use AbortController",
+                    files: ["src/lib/auth.ts"],
+                    kind: "error_loop"
+                }
+            });
+            assert.ok(!deadEndRes.isError);
+            const deIdMatch = deadEndRes.content[0].text.match(/ID: (de-[a-f0-9]+)/);
+            assert.ok(deIdMatch);
+            const testDeId = deIdMatch[1];
+
+            const checkDeRes = await client.callTool({
+                name: "check_dead_ends",
+                arguments: {
+                    project_path: projectDir,
+                    query: "timeout"
+                }
+            });
+            assert.ok(!checkDeRes.isError);
+            assert.match(checkDeRes.content[0].text, /Fetch API timeout/);
+
+            const fileMemRes = await client.callTool({
+                name: "get_file_memories",
+                arguments: {
+                    project_path: projectDir,
+                    file_paths: ["src/lib/auth.ts"]
+                }
+            });
+            assert.ok(!fileMemRes.isError);
+            assert.match(fileMemRes.content[0].text, /File-Anchored Architectural Memories/);
+
+            const reopenRes = await client.callTool({
+                name: "reopen_dead_end",
+                arguments: {
+                    project_path: projectDir,
+                    id: testDeId,
+                    reason: "Platform added native timeout option"
+                }
+            });
+            assert.ok(!reopenRes.isError);
+
+            const deleteRes = await client.callTool({
+                name: "delete_memory_node",
+                arguments: {
+                    project_path: projectDir,
+                    id: testDeId,
+                    hard_delete: false
+                }
+            });
+            assert.ok(!deleteRes.isError);
 
             const saveGlobRes = await client.callTool({
                 name: "save_global_knowledge",

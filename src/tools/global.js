@@ -13,7 +13,7 @@ import {
     reopenDeadEnd,
     getTokenMetrics
 } from "../store/index.js";
-import { wrapHandler, READ_ONLY_ANNOTATIONS, WRITE_ANNOTATIONS } from "./common.js";
+import { executeTool, wrapHandler, READ_ONLY_ANNOTATIONS, WRITE_ANNOTATIONS } from "./common.js";
 
 /**
  * Registers all global knowledge, dead-end reopening, and audit metrics tools (11–15) on an McpServer instance.
@@ -47,7 +47,11 @@ export function registerGlobalTools(server) {
             },
             annotations: WRITE_ANNOTATIONS
         },
-        wrapHandler((args) => saveGlobalKnowledge(args), "save_global_knowledge")
+        async (args) => {
+            return executeTool("save_global_knowledge", args, () =>
+                saveGlobalKnowledge(args)
+            );
+        }
     );
 
     // 12. search_global_knowledge
@@ -65,7 +69,11 @@ export function registerGlobalTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler((args) => searchGlobalKnowledge(args), "search_global_knowledge")
+        async (args) => {
+            return executeTool("search_global_knowledge", args, () =>
+                searchGlobalKnowledge(args)
+            );
+        }
     );
 
     // 13. promote_to_global
@@ -83,7 +91,11 @@ export function registerGlobalTools(server) {
             },
             annotations: WRITE_ANNOTATIONS
         },
-        wrapHandler((args) => promoteToGlobal(args.project_path, args), "promote_to_global")
+        async (args) => {
+            return executeTool("promote_to_global", args, () =>
+                promoteToGlobal(args.project_path, args)
+            );
+        }
     );
 
     // 14. reopen_dead_end
@@ -105,7 +117,11 @@ export function registerGlobalTools(server) {
                 openWorldHint: false
             }
         },
-        wrapHandler((args) => reopenDeadEnd(args.project_path, args), "reopen_dead_end")
+        async (args) => {
+            return executeTool("reopen_dead_end", args, () =>
+                reopenDeadEnd(args.project_path, args)
+            );
+        }
     );
 
     // 15. get_token_metrics
@@ -128,6 +144,10 @@ export function registerGlobalTools(server) {
             },
             annotations: READ_ONLY_ANNOTATIONS
         },
-        wrapHandler((args) => getTokenMetrics(args), "get_token_metrics")
+        async (args) => {
+            return executeTool("get_token_metrics", args, () =>
+                getTokenMetrics(args)
+            );
+        }
     );
 }

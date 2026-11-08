@@ -67,6 +67,37 @@ export function errText(message) {
 }
 
 /**
+ * Executes a tool callback with exception handling, standard MCP response formatting,
+ * and automatic output token budgeting middleware.
+ *
+ * @param {string} toolName - Name of the MCP tool for audit logging.
+ * @param {Record<string, any>} args - Validated tool arguments.
+ * @param {() => Promise<any>|any} fn - Tool execution callback.
+ * @returns {Promise<{ content: Array<{ type: "text", text: string }>, isError?: boolean }>}
+ */
+export async function executeTool(toolName, args, fn) {
+    try {
+        const res = await fn();
+        if (res?.isError) {
+            const errMsg = typeof res.text === "string" ? res.text : (res.message || "Unknown error");
+            return errText(errMsg);
+        }
+        const rawText =
+            typeof res?.text === "string"
+                ? res.text
+                : typeof res === "string"
+                ? res
+                : JSON.stringify(res, null, 2);
+        const budgeted = applyTokenBudget(rawText, toolName, args?.project_path, {
+            bypass: args?.full_content === true
+        });
+        return okText(budgeted.text);
+    } catch (err) {
+        return errText(`Error: ${err.message}`);
+    }
+}
+
+/**
  * Wraps an internal tool handler function with exception handling, standard formatting,
  * and automatic output token budgeting middleware.
  *
@@ -75,25 +106,5 @@ export function errText(message) {
  * @returns {(args: any) => Promise<{ content: Array<{ type: "text", text: string }>, isError?: boolean }>}
  */
 export function wrapHandler(fn, toolName) {
-    return async (args) => {
-        try {
-            const res = await fn(args);
-            if (res?.isError) {
-                const errMsg = typeof res.text === "string" ? res.text : (res.message || "Unknown error");
-                return errText(errMsg);
-            }
-            const rawText =
-                typeof res?.text === "string"
-                    ? res.text
-                    : typeof res === "string"
-                    ? res
-                    : JSON.stringify(res, null, 2);
-            const budgeted = applyTokenBudget(rawText, toolName, args?.project_path, {
-                bypass: args?.full_content === true
-            });
-            return okText(budgeted.text);
-        } catch (err) {
-            return errText(`Error: ${err.message}`);
-        }
-    };
+    return async (args) => executeTool(toolName, args, () => fn(args));
 }

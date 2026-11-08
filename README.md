@@ -4,6 +4,7 @@
 [![Node.js Version](https://img.shields.io/badge/Node.js-%3E%3D22.5.0-brightgreen.svg)](https://nodejs.org/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-1.29%2B-purple.svg)](https://modelcontextprotocol.io/)
 [![Glama](https://glama.ai/mcp/servers/msking18/agent-memory-mcp/badge)](https://glama.ai/mcp/servers/msking18/agent-memory-mcp)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/msking18/agent-memory-mcp)](https://m8ven.ai/mcp/msking18/agent-memory-mcp?s=readme)
 
 > **Persistent, per-project architectural memory, centralized cross-project global knowledge graph, two-tier anti-loop dead-end tracking, and token budgeting middleware for AI coding agents.**
 
@@ -196,6 +197,12 @@ Run the automated test suite across SQLite transactions, FTS5 queries, JIT migra
 ```bash
 npm test
 ```
+
+---
+
+## 🔒 Privacy Policy
+
+`agent-memory-mcp` is local-first software. All SQLite databases, search indexes, and memory stores reside exclusively on your machine (`~/.ag-memory-mcp/` or your workspace directory). It collects zero telemetry and transmits no data over the network. For complete details, see [PRIVACY.md](PRIVACY.md).
 
 ---
 

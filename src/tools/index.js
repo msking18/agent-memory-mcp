@@ -14,6 +14,7 @@ export {
     WRITE_ANNOTATIONS,
     CategoryEnum,
     BatchEntrySchema,
+    executeTool,
     wrapHandler,
     okText,
     errText

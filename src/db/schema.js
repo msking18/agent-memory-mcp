@@ -5,7 +5,7 @@
  * databases and the centralized global knowledge graph.
  */
 
-export const SCHEMA_VERSION = "3.1.0";
+export const SCHEMA_VERSION = "3.2.0";
 
 /**
  * SQLite DDL schema for per-project databases (`project-*.db`).

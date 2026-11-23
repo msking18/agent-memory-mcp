@@ -19,7 +19,7 @@
   },
   "scripts": {
     "start": "node --no-warnings index.js",
-    "test": "node --no-warnings --test test/memory.test.js"
+    "test": "node --no-warnings --test test/memory.test.js test/workspaces.test.js"
   },
   "repository": {
     "type": "git",

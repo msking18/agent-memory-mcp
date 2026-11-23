@@ -40,6 +40,20 @@ import {
     classifyWorkspaceFiles
 } from "../src/paths/files.js";
 import * as pathsFacade from "../src/paths.js";
+import { closeAllDatabases } from "../src/db.js";
+import {
+    configureWorkspace,
+    resolveStoreLinkedFolders,
+    checkEntryFileStaleness,
+    checkMemoryStatus,
+    saveProjectMemory,
+    readMemoryNode,
+    updateMemoryNode,
+    recordDeadEnd,
+    checkDeadEnds,
+    getFileMemories
+} from "../src/store/index.js";
+import * as storeFacade from "../src/store.js";
 
 describe("Zero-Process Git, Worktree, Bare-Repo & Root-Commit Identity", () => {
     let tempRoot;
@@ -1304,5 +1318,435 @@ describe("Workspace File Classification, Symlink/file:// Resolution, & Remote/Li
             assert.equal(winRes.externalFiles.length, 1);
             assert.equal(winRes.externalFiles[0].input, "D:\\Other\\file.ts");
         }
+    });
+});
+
+describe("Store Guardrails, Remote-Safe Prep/Staleness, & configureWorkspace Controller", () => {
+    let tempRoot;
+    let dataDir;
+    let prevDataDir;
+
+    beforeEach(() => {
+        prevDataDir = process.env.AG_MEMORY_DATA_DIR;
+        tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ag-mem-store-guard-test-"));
+        dataDir = path.join(tempRoot, "data-vault");
+        fs.mkdirSync(dataDir, { recursive: true });
+        process.env.AG_MEMORY_DATA_DIR = dataDir;
+    });
+
+    afterEach(() => {
+        closeAllDatabases();
+        if (prevDataDir === undefined) {
+            delete process.env.AG_MEMORY_DATA_DIR;
+        } else {
+            process.env.AG_MEMORY_DATA_DIR = prevDataDir;
+        }
+        if (tempRoot) {
+            try {
+                fs.rmSync(tempRoot, { recursive: true, force: true });
+            } catch {
+                // Ignore transient Windows temp cleanup delay
+            }
+        }
+    });
+
+    it("5.1 Remote store skips legacy migration and returns skippedRemote: true from staleness check", () => {
+        assert.equal(storeFacade.configureWorkspace, configureWorkspace);
+        assert.equal(storeFacade.resolveStoreLinkedFolders, resolveStoreLinkedFolders);
+
+        const remotePath = "ssh://dev/home/app";
+        const remoteUrl = "https://github.com/org/app.git";
+
+        // Calling checkMemoryStatus with git_remote persists remote URI -> gitIdentity binding without creating empty .db
+        const initialStatus = checkMemoryStatus(remotePath, { git_remote: remoteUrl });
+        assert.equal(initialStatus.initialized, false);
+        assert.equal(initialStatus.storeInfo.isRemote, true);
+        assert.equal(initialStatus.storeInfo.gitIdentity, "github.com/org/app");
+        assert.equal(fs.existsSync(initialStatus.storeInfo.dbPath), false);
+
+        const resolvedLater = getProjectStoreInfo(remotePath);
+        assert.equal(resolvedLater.storeKey, initialStatus.storeInfo.storeKey);
+        assert.equal(resolvedLater.gitIdentity, "github.com/org/app");
+
+        // Saving and reading on remote URI skips legacy .ag-memory.json migration and sets skippedRemote: true
+        const saved = saveProjectMemory(remotePath, {
+            title: "Remote App Architecture",
+            summary: "Deployed via SSH container.",
+            category: "architecture",
+            files: ["ssh://dev/home/app/src/index.ts", "/home/app/src/routes.ts"],
+            git_remote: remoteUrl
+        });
+        assert.equal(saved.isError, false);
+        assert.deepEqual(saved.results[0].files, ["src/index.ts", "src/routes.ts"]);
+
+        const readRes = readMemoryNode(remotePath, { id: saved.results[0].id });
+        assert.equal(readRes.isError, false);
+        assert.equal(readRes.nodes.length, 1);
+        assert.deepEqual(readRes.nodes[0].staleFiles, []);
+        assert.deepEqual(readRes.nodes[0].missingFiles, []);
+        assert.equal(readRes.nodes[0].skippedRemote, true);
+
+        const directStale = checkEntryFileStaleness(
+            remotePath,
+            ["src/index.ts"],
+            new Date(0).toISOString(),
+            { isRemote: true }
+        );
+        assert.deepEqual(directStale, { staleFiles: [], missingFiles: [], skippedRemote: true });
+    });
+
+    it("5.2 Staleness check stats linked @<slug>/ files on disk and skips unlinked/unknown @<slug>/ anchors", () => {
+        const projA = path.join(tempRoot, "proj-a-stale");
+        const toolB = path.join(tempRoot, "tool-b-stale");
+        const removedC = path.join(tempRoot, "removed-c-stale");
+        fs.mkdirSync(path.join(projA, ".git"), { recursive: true });
+        fs.mkdirSync(path.join(toolB, "src"), { recursive: true });
+        fs.mkdirSync(removedC, { recursive: true });
+
+        fs.writeFileSync(
+            path.join(projA, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/proj-a-stale.git\n',
+            "utf8"
+        );
+        const toolBFile = path.join(toolB, "src", "b.ts");
+        const removedFile = path.join(removedC, "old.ts");
+        fs.writeFileSync(toolBFile, "export const b = 1;\n", "utf8");
+        fs.writeFileSync(removedFile, "export const old = 1;\n", "utf8");
+
+        const policyB = configureWorkspace({
+            action: "set_folder_policy",
+            primary_path: projA,
+            folder_path: toolB,
+            mode: "linked",
+            folder_slug: "tool-b"
+        });
+        assert.equal(policyB.isError, false);
+        assert.equal(policyB.folderSlug, "tool-b");
+
+        const policyC = configureWorkspace({
+            action: "set_folder_policy",
+            primary_path: projA,
+            folder_path: removedC,
+            mode: "linked",
+            folder_slug: "removed-slug"
+        });
+        assert.equal(policyC.isError, false);
+
+        const saved = saveProjectMemory(projA, {
+            title: "Linked Tool Dependencies",
+            summary: "Uses tool-b and legacy removed-slug helper.",
+            files: [toolBFile, removedFile]
+        });
+        assert.equal(saved.isError, false);
+        assert.deepEqual(saved.results[0].files, ["@tool-b/src/b.ts", "@removed-slug/old.ts"]);
+
+        // Unlink removedC so @removed-slug/ is no longer an active linked folder
+        const unlinkC = configureWorkspace({
+            action: "set_folder_policy",
+            primary_path: projA,
+            folder_path: removedC,
+            mode: "ignored"
+        });
+        assert.equal(unlinkC.isError, false);
+
+        // Touch B/src/b.ts into the future -> @tool-b/src/b.ts flagged stale, @removed-slug/old.ts skipped cleanly
+        const futureTime = new Date(Date.now() + 10000);
+        fs.utimesSync(toolBFile, futureTime, futureTime);
+
+        const readRes = readMemoryNode(projA, { id: saved.results[0].id });
+        assert.equal(readRes.isError, false);
+        assert.deepEqual(readRes.nodes[0].staleFiles, ["@tool-b/src/b.ts"]);
+        assert.deepEqual(readRes.nodes[0].missingFiles, []);
+        assert.match(readRes.text, /\[STALE WARNING\].*@tool-b\/src\/b\.ts/);
+        assert.ok(!readRes.text.includes("no longer exist on disk"));
+
+        // Worktree of projA also resolves linked folders via canonicalPath/aliases of projects[storeKey]
+        const wtMeta = path.join(projA, ".git", "worktrees", "wt-stale");
+        const wtDir = path.join(tempRoot, "proj-a-wt-stale");
+        fs.mkdirSync(wtMeta, { recursive: true });
+        fs.mkdirSync(wtDir, { recursive: true });
+        fs.writeFileSync(path.join(wtMeta, "commondir"), "../..\n", "utf8");
+        fs.writeFileSync(path.join(wtDir, ".git"), `gitdir: ${wtMeta}\n`, "utf8");
+
+        const wtRead = readMemoryNode(wtDir, { id: saved.results[0].id });
+        assert.equal(wtRead.isError, false);
+        assert.deepEqual(wtRead.nodes[0].staleFiles, ["@tool-b/src/b.ts"]);
+        assert.deepEqual(wtRead.nodes[0].missingFiles, []);
+    });
+
+    it("5.3 Cross-folder write guardrail aborts single save, batch entries[] atomically, updateMemoryNode, and recordDeadEnd; allow_external_files: true overrides", () => {
+        const projA = path.join(tempRoot, "guard-proj-a");
+        const projB = path.join(tempRoot, "guard-proj-b");
+        fs.mkdirSync(path.join(projA, "src"), { recursive: true });
+        fs.mkdirSync(path.join(projB, "src"), { recursive: true });
+
+        const fileA = path.join(projA, "src", "a.ts");
+        const fileB = path.join(projB, "src", "b.ts");
+        fs.writeFileSync(fileA, "export const a = 1;\n", "utf8");
+        fs.writeFileSync(fileB, "export const b = 2;\n", "utf8");
+
+        // Initialize B so B owns fileB in projects_index.json
+        const savedB = saveProjectMemory(projB, {
+            title: "Project B Core",
+            summary: "Project B module.",
+            files: ["src/b.ts"]
+        });
+        assert.equal(savedB.isError, false);
+        const infoB = getProjectStoreInfo(projB);
+
+        // 1) Single saveProjectMemory on A referencing B's file -> blocked with B named as owner
+        const singleBlocked = saveProjectMemory(projA, {
+            title: "Cross-Folder Single",
+            summary: "References B.",
+            files: [fileB]
+        });
+        assert.equal(singleBlocked.isError, true);
+        assert.ok(singleBlocked.text.includes(infoB.canonicalPath));
+        assert.equal(checkMemoryStatus(projA).initialized, false);
+
+        // 2) Batch entries[] [validEntry, externalBFileEntry] -> atomic abort, zero rows written to A
+        const batchBlocked = saveProjectMemory(projA, {
+            entries: [
+                {
+                    title: "Tech Stack & Ecosystem",
+                    summary: "Valid entry in A.",
+                    tags: ["architecture"],
+                    files: ["src/a.ts"]
+                },
+                {
+                    title: "Project Structure & Architecture",
+                    summary: "Invalid external ref to B.",
+                    tags: ["architecture"],
+                    files: [fileB]
+                }
+            ]
+        });
+        assert.equal(batchBlocked.isError, true);
+        assert.ok(batchBlocked.text.includes(infoB.canonicalPath));
+        const statusAfterAbort = checkMemoryStatus(projA);
+        assert.equal(statusAfterAbort.initialized, false);
+        assert.equal(fs.existsSync(statusAfterAbort.storeInfo.dbPath), false);
+
+        // Retry batch with allow_external_files: true -> succeeds atomically
+        const batchAllowed = saveProjectMemory(projA, {
+            entries: [
+                {
+                    title: "Tech Stack & Ecosystem",
+                    summary: "Valid entry in A.",
+                    tags: ["architecture"],
+                    files: ["src/a.ts"]
+                },
+                {
+                    title: "External Bridge Note",
+                    summary: "Explicitly allowed external ref to B.",
+                    files: [fileB]
+                }
+            ],
+            allow_external_files: true
+        });
+        assert.equal(batchAllowed.isError, false);
+        assert.equal(batchAllowed.results.length, 2);
+        const targetNodeId = batchAllowed.results[0].id;
+
+        // 3) updateMemoryNode referencing B's file -> blocked until allow_external_files: true
+        const updateBlocked = updateMemoryNode(projA, {
+            id: targetNodeId,
+            files: [fileB]
+        });
+        assert.equal(updateBlocked.isError, true);
+        assert.ok(updateBlocked.text.includes(infoB.canonicalPath));
+        assert.deepEqual(readMemoryNode(projA, { id: targetNodeId }).nodes[0].files, ["src/a.ts"]);
+
+        const updateAllowed = updateMemoryNode(projA, {
+            id: targetNodeId,
+            files: [fileB],
+            allow_external_files: true
+        });
+        assert.equal(updateAllowed.isError, false);
+
+        // 4) recordDeadEnd referencing B's file -> blocked until allow_external_files: true
+        const deBlocked = recordDeadEnd(projA, {
+            error_pattern: "Cross-folder failure",
+            attempted_solution: "Edited B from A",
+            root_cause: "B has strict validation",
+            files: [fileB]
+        });
+        assert.equal(deBlocked.isError, true);
+        assert.ok(deBlocked.text.includes(infoB.canonicalPath));
+        assert.equal(checkDeadEnds(projA).matches.length, 0);
+
+        const deAllowed = recordDeadEnd(projA, {
+            error_pattern: "Cross-folder failure",
+            attempted_solution: "Edited B from A",
+            root_cause: "B has strict validation",
+            files: [fileB],
+            allow_external_files: true
+        });
+        assert.equal(deAllowed.isError, false);
+        assert.equal(checkDeadEnds(projA).matches.length, 1);
+    });
+
+    it("5.4 Linked-folder read queries normalize B paths to @<folderSlug>/ in getFileMemories and checkDeadEnds", () => {
+        const projA = path.join(tempRoot, "read-proj-a");
+        const toolB = path.join(tempRoot, "read-tool-b");
+        fs.mkdirSync(path.join(projA, "src"), { recursive: true });
+        fs.mkdirSync(path.join(toolB, "src"), { recursive: true });
+
+        const fileB = path.join(toolB, "src", "b.ts");
+        const fileA = path.join(projA, "src", "b.ts");
+        fs.writeFileSync(fileB, "export const b = true;\n", "utf8");
+        fs.writeFileSync(fileA, "export const a = true;\n", "utf8");
+
+        const policy = configureWorkspace({
+            action: "set_folder_policy",
+            primary_path: projA,
+            folder_path: toolB,
+            mode: "linked",
+            folder_slug: "tool-b"
+        });
+        assert.equal(policy.isError, false);
+
+        const memB = saveProjectMemory(projA, {
+            title: "Tool B Parser Invariant",
+            summary: "Must preserve UTF-8 BOM.",
+            category: "decision",
+            files: [fileB]
+        });
+        assert.equal(memB.isError, false);
+        assert.deepEqual(memB.results[0].files, ["@tool-b/src/b.ts"]);
+
+        const deB = recordDeadEnd(projA, {
+            error_pattern: "Parser strips trailing newline",
+            attempted_solution: "Trimmed whole buffer",
+            root_cause: "Corrupts lockfile hash",
+            files: [fileB]
+        });
+        assert.equal(deB.isError, false);
+
+        const fileMemRes = getFileMemories(projA, { file_paths: [fileB] });
+        assert.equal(fileMemRes.memories.length, 1);
+        assert.equal(fileMemRes.memories[0].id, memB.results[0].id);
+        assert.equal(fileMemRes.deadEnds.length, 1);
+        assert.equal(fileMemRes.deadEnds[0].id, deB.id);
+
+        const deCheckB = checkDeadEnds(projA, { file_path: fileB });
+        assert.equal(deCheckB.matches.length, 1);
+        assert.equal(deCheckB.matches[0].id, deB.id);
+
+        // Querying projA's own src/b.ts must not falsely match @tool-b/src/b.ts
+        const deCheckA = checkDeadEnds(projA, { file_path: fileA });
+        assert.equal(deCheckA.matches.length, 0);
+    });
+
+    it("5.5 Clone-disambiguation guardrail blocks accidental bootstrap unless force_isolate: true or configureWorkspace; checkMemoryStatus surfaces [CONFLICT]", () => {
+        const clone1 = path.join(tempRoot, "live-clone-1");
+        const clone2 = path.join(tempRoot, "live-clone-2");
+        const clone3 = path.join(tempRoot, "live-clone-3");
+        for (const dir of [clone1, clone2, clone3]) {
+            fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
+            fs.writeFileSync(
+                path.join(dir, ".git", "config"),
+                '[remote "origin"]\n\turl = https://github.com/org/starter-template.git\n',
+                "utf8"
+            );
+        }
+
+        const c1Saved = saveProjectMemory(clone1, {
+            title: "Tech Stack & Ecosystem",
+            summary: "Starter clone 1.",
+            tags: ["architecture"]
+        });
+        assert.equal(c1Saved.isError, false);
+
+        // Simultaneous live clone2 status surfaces CLONE DISAMBIGUATION REQUIRED
+        const c2Status = checkMemoryStatus(clone2);
+        assert.equal(c2Status.initialized, false);
+        assert.ok(c2Status.duplicateCloneCandidate);
+        assert.match(c2Status.text, /\[AGENT-MEMORY CLONE DISAMBIGUATION REQUIRED\]/);
+
+        // Writing to clone2 without force_isolate or configureWorkspace is blocked before DB creation
+        const c2SaveBlocked = saveProjectMemory(clone2, {
+            title: "Tech Stack & Ecosystem",
+            summary: "Accidental bootstrap."
+        });
+        assert.equal(c2SaveBlocked.isError, true);
+        assert.match(c2SaveBlocked.text, /CLONE DISAMBIGUATION/i);
+        assert.equal(fs.existsSync(getProjectStoreInfo(clone2).dbPath), false);
+
+        const c2DeBlocked = recordDeadEnd(clone2, {
+            error_pattern: "Clone error",
+            attempted_solution: "Ignored warning",
+            root_cause: "Needs disambiguation"
+        });
+        assert.equal(c2DeBlocked.isError, true);
+        assert.equal(fs.existsSync(getProjectStoreInfo(clone2).dbPath), false);
+
+        // Retrying saveProjectMemory with force_isolate: true isolates and succeeds
+        const c2Forced = saveProjectMemory(clone2, {
+            title: "Tech Stack & Ecosystem",
+            summary: "Isolated clone 2.",
+            tags: ["architecture"],
+            force_isolate: true
+        });
+        assert.equal(c2Forced.isError, false);
+        assert.notEqual(c2Forced.storeInfo.storeKey, c1Saved.storeInfo.storeKey);
+        assert.equal(checkMemoryStatus(clone2).duplicateCloneCandidate, null);
+
+        // Resolving clone3 via configureWorkspace({ action: "link_project_identity", isolate: true })
+        const c3Link = configureWorkspace({
+            action: "link_project_identity",
+            project_path: clone3,
+            isolate: true
+        });
+        assert.equal(c3Link.isError, false);
+        assert.equal(c3Link.action, "isolated");
+
+        const c3Save = saveProjectMemory(clone3, {
+            title: "Tech Stack & Ecosystem",
+            summary: "Isolated clone 3 via configureWorkspace.",
+            tags: ["architecture"]
+        });
+        assert.equal(c3Save.isError, false);
+
+        // Duplicate gitIdentity collision surfaces [CONFLICT] in checkMemoryStatus and configureWorkspace inspect
+        const storeOne = path.join(tempRoot, "conflict-store-one");
+        const storeTwo = path.join(tempRoot, "conflict-store-two");
+        fs.mkdirSync(storeOne, { recursive: true });
+        fs.mkdirSync(path.join(storeTwo, ".git"), { recursive: true });
+        fs.writeFileSync(
+            path.join(storeTwo, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/conflict-repo.git\n',
+            "utf8"
+        );
+
+        saveProjectMemory(storeOne, { title: "One", summary: "Store one initialized." });
+        const s2Save = saveProjectMemory(storeTwo, { title: "Two", summary: "Store two owns git." });
+
+        fs.mkdirSync(path.join(storeOne, ".git"), { recursive: true });
+        fs.writeFileSync(
+            path.join(storeOne, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/conflict-repo.git\n',
+            "utf8"
+        );
+
+        const conflictStatus = checkMemoryStatus(storeOne);
+        assert.equal(conflictStatus.initialized, true);
+        assert.ok(conflictStatus.gitIdentityConflict);
+        assert.equal(conflictStatus.gitIdentityConflict.conflictingStoreKey, s2Save.storeInfo.storeKey);
+        assert.match(conflictStatus.text, /\[CONFLICT\]/);
+
+        const inspectRes = configureWorkspace({
+            action: "inspect",
+            project_path: storeOne,
+            workspace_paths: [storeOne, storeTwo]
+        });
+        assert.equal(inspectRes.isError, false);
+        assert.match(inspectRes.text, /\[CONFLICT\]/);
+
+        // configureWorkspace returns structured { isError: true, text } on invalid action/args
+        assert.equal(configureWorkspace({ action: "bogus" }).isError, true);
+        assert.equal(configureWorkspace({ action: "set_folder_policy", primary_path: storeOne }).isError, true);
+        assert.equal(configureWorkspace({ action: "inspect" }).isError, true);
+        assert.equal(configureWorkspace({ action: "link_project_identity", project_path: storeOne }).isError, true);
     });
 });

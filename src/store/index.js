@@ -19,8 +19,12 @@ import {
     cleanFiles,
     prepareStore,
     formatMigrationBanner,
-    checkEntryFileStaleness
+    formatCloneDisambiguationNotice,
+    formatGitConflictNotice,
+    checkEntryFileStaleness,
+    resolveAndGuardFiles
 } from "./helpers.js";
+import { configureWorkspace, resolveStoreLinkedFolders } from "./workspace.js";
 import {
     saveGlobalKnowledge,
     searchGlobalKnowledge,
@@ -53,7 +57,12 @@ export {
     cleanFiles,
     prepareStore,
     formatMigrationBanner,
+    formatCloneDisambiguationNotice,
+    formatGitConflictNotice,
     checkEntryFileStaleness,
+    resolveAndGuardFiles,
+    configureWorkspace,
+    resolveStoreLinkedFolders,
     checkMemoryStatus,
     getSessionTimeline,
     saveProjectMemory,
@@ -160,6 +169,11 @@ export function readMemoryNode(
         }
     }
 
+    const linkedFolders = storeInfo ? resolveStoreLinkedFolders(storeInfo) : [];
+    const linkedFoldersBySlug = new Map(
+        linkedFolders.map((f) => [f.folderSlug.toLowerCase(), f])
+    );
+
     const getMemStmt = db ? db.prepare("SELECT * FROM memories WHERE id = ?") : null;
     const getBySlugStmt = db
         ? db.prepare("SELECT * FROM memories WHERE slug = ? AND status = 'active' LIMIT 1")
@@ -211,10 +225,11 @@ export function readMemoryNode(
         if (mem) {
             const tags = safeJsonArray(mem.tags_json);
             const files = safeJsonArray(mem.files_json);
-            const { staleFiles, missingFiles } = checkEntryFileStaleness(
+            const { staleFiles, missingFiles, skippedRemote } = checkEntryFileStaleness(
                 storeInfo.canonicalPath,
                 files,
-                mem.updated_at
+                mem.updated_at,
+                { isRemote: storeInfo.isRemote, linkedFoldersBySlug }
             );
 
             const headerMeta = [
@@ -254,7 +269,7 @@ export function readMemoryNode(
                 }
             }
 
-            foundNodes.push({ ...mem, tags, files, staleFiles, missingFiles });
+            foundNodes.push({ ...mem, tags, files, staleFiles, missingFiles, skippedRemote });
             blocks.push(lines.join("\n"));
             continue;
         }
@@ -312,7 +327,7 @@ export function readMemoryNode(
  */
 export function updateMemoryNode(
     projectPath,
-    { id, title, summary, tags, category, files, tech_stack }
+    { id, title, summary, tags, category, files, tech_stack, allow_external_files = false }
 ) {
     if (typeof id === "string" && id.startsWith("g-")) {
         return updateGlobalMemory({ id, title, summary, category, tags, tech_stack });
@@ -325,6 +340,10 @@ export function updateMemoryNode(
         return { isError: true, text: banner + "Error: Project memory is uninitialized." };
     }
 
+    if (storeInfo.duplicateCloneCandidate) {
+        return { isError: true, text: banner + formatCloneDisambiguationNotice(storeInfo) };
+    }
+
     const existing =
         db.prepare("SELECT * FROM memories WHERE id = ?").get(id) ||
         db.prepare("SELECT * FROM memories WHERE slug = ? AND status = 'active' LIMIT 1").get(id);
@@ -333,14 +352,24 @@ export function updateMemoryNode(
         return { isError: true, text: banner + `Error: Memory ID "${id}" not found.` };
     }
 
+    let nextFiles;
+    if (Array.isArray(files)) {
+        const guard = resolveAndGuardFiles(storeInfo, files, {
+            allowExternal: allow_external_files
+        });
+        if (guard.isError) {
+            return { isError: true, text: banner + guard.text };
+        }
+        nextFiles = guard.files;
+    } else {
+        nextFiles = safeJsonArray(existing.files_json);
+    }
+
     const now = new Date().toISOString();
     const nextTitle = typeof title === "string" && title.trim() ? title.trim() : existing.title;
     const nextSummary =
         typeof summary === "string" && summary.trim() ? summary.trim() : existing.summary;
     const nextTags = Array.isArray(tags) ? cleanTags(tags) : safeJsonArray(existing.tags_json);
-    const nextFiles = Array.isArray(files)
-        ? cleanFiles(storeInfo.canonicalPath, files)
-        : safeJsonArray(existing.files_json);
     const nextCategory =
         category && VALID_CATEGORIES.includes(category) ? category : existing.category;
 

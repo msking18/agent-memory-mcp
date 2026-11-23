@@ -5,13 +5,20 @@
  * code/test debugging errors (`error_loop`) and deliberate architectural trade-offs (`architectural`).
  */
 
-import { normalizeWorkspaceRelativePath } from "../paths.js";
 import {
-    cleanFiles,
+    getProjectStoreInfo,
+    linkProjectIdentity,
+    normalizeWorkspaceRelativePath,
+    classifyWorkspaceFiles
+} from "../paths.js";
+import {
     formatMigrationBanner,
+    formatCloneDisambiguationNotice,
     generateUniqueId,
-    prepareStore
+    prepareStore,
+    resolveAndGuardFiles
 } from "./helpers.js";
+import { resolveStoreLinkedFolders } from "./workspace.js";
 
 /**
  * Safely parses a JSON array string with fallback to empty array.
@@ -69,19 +76,56 @@ export function recordDeadEnd(
         root_cause,
         files = [],
         kind = "error_loop",
-        constraints = []
+        constraints = [],
+        allow_external_files = false,
+        git_remote,
+        force_isolate = false
     } = {}
 ) {
-    const { storeInfo, migration, db } = prepareStore(projectPath, { createIfMissing: true });
-    const banner = formatMigrationBanner(migration);
-
     if (!error_pattern?.trim() || !attempted_solution?.trim() || !root_cause?.trim()) {
         throw new Error(
             "record_dead_end requires non-empty error_pattern, attempted_solution, and root_cause."
         );
     }
 
-    const cleanedFiles = cleanFiles(storeInfo.canonicalPath, files);
+    const cleanGitRemote = typeof git_remote === "string" && git_remote.trim() ? git_remote.trim() : "";
+    const previewStoreInfo = getProjectStoreInfo(
+        projectPath,
+        cleanGitRemote ? { gitRemote: cleanGitRemote } : undefined
+    );
+
+    if (previewStoreInfo.duplicateCloneCandidate && force_isolate !== true) {
+        return {
+            isError: true,
+            text: formatCloneDisambiguationNotice(previewStoreInfo)
+        };
+    }
+
+    const guard = resolveAndGuardFiles(previewStoreInfo, files, {
+        allowExternal: allow_external_files
+    });
+    if (guard.isError) {
+        return {
+            isError: true,
+            text: guard.text
+        };
+    }
+
+    if (previewStoreInfo.duplicateCloneCandidate && force_isolate === true) {
+        linkProjectIdentity({
+            projectPath,
+            gitRemote: cleanGitRemote || undefined,
+            isolate: true
+        });
+    }
+
+    const { migration, db } = prepareStore(projectPath, {
+        createIfMissing: true,
+        gitRemote: cleanGitRemote || undefined
+    });
+    const banner = formatMigrationBanner(migration);
+
+    const cleanedFiles = guard.files;
     const validKind = kind === "architectural" ? "architectural" : "error_loop";
     const cleanConstraints = Array.isArray(constraints)
         ? constraints.map((c) => String(c ?? "").trim()).filter(Boolean)
@@ -118,6 +162,7 @@ export function recordDeadEnd(
             : "";
 
     return {
+        isError: false,
         id,
         kind: validKind,
         text:
@@ -135,6 +180,7 @@ export function recordDeadEnd(
 
 /**
  * Checks the anti-loop dead-end registry by error text, keyword, or file path before attempting fixes.
+ * Normalizes paths inside linked secondary folders to `@<folderSlug>/...` anchors.
  *
  * @param {string} projectPath - Workspace root directory.
  * @param {Object} [args] - Search arguments.
@@ -169,9 +215,16 @@ export function checkDeadEnds(projectPath, { query, file_path, limit = 10, kind 
     const queryTerms = typeof query === "string" && query.trim()
         ? query.toLowerCase().split(/\s+/).filter((t) => t.length > 2)
         : [];
-    const normalizedTargetFile = file_path
-        ? normalizeWorkspaceRelativePath(storeInfo.canonicalPath, file_path)
-        : null;
+    let normalizedTargetFile = null;
+    if (typeof file_path === "string" && file_path.trim()) {
+        const linkedFolders = resolveStoreLinkedFolders(storeInfo);
+        const classified = classifyWorkspaceFiles(storeInfo, [file_path], { linkedFolders });
+        normalizedTargetFile =
+            classified.allNormalized[0] ||
+            normalizeWorkspaceRelativePath(storeInfo.canonicalPath, file_path, {
+                isRemote: storeInfo.isRemote
+            });
+    }
 
     const matches = [];
 
@@ -184,6 +237,16 @@ export function checkDeadEnds(projectPath, { query, file_path, limit = 10, kind 
             matchesFile = rowFiles.some((f) => {
                 const fNorm = f.replace(/\\/g, "/").toLowerCase();
                 const targetNorm = normalizedTargetFile.replace(/\\/g, "/").toLowerCase();
+                const fAnchor = fNorm.match(/^@([^/]+)\//);
+                const targetAnchor = targetNorm.match(/^@([^/]+)\//);
+                if (fAnchor || targetAnchor) {
+                    if (!fAnchor || !targetAnchor || fAnchor[1] !== targetAnchor[1]) return false;
+                    return (
+                        fNorm === targetNorm ||
+                        fNorm.startsWith(targetNorm + "/") ||
+                        targetNorm.startsWith(fNorm + "/")
+                    );
+                }
                 return fNorm === targetNorm || targetNorm.endsWith(fNorm) || fNorm.endsWith(targetNorm);
             });
         }

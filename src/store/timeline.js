@@ -5,7 +5,13 @@
  * and `get_session_timeline` (filtered chronological feed).
  */
 
-import { prepareStore, formatMigrationBanner, smartPreview } from "./helpers.js";
+import {
+    prepareStore,
+    formatMigrationBanner,
+    formatCloneDisambiguationNotice,
+    formatGitConflictNotice,
+    smartPreview
+} from "./helpers.js";
 
 /**
  * Safely parses a JSON array string with fallback to empty array.
@@ -27,27 +33,40 @@ function safeJsonArray(raw) {
  * Checks if project memory is initialized and retrieves the architecture index,
  * active dead-end count, and recent session timeline in a single call.
  *
- * @param {string} projectPath - Workspace root directory.
+ * @param {string} projectPath - Workspace root directory or remote URI.
  * @param {Object} [options] - Options.
  * @param {boolean} [options.include_timeline=true] - Whether to include recent session entries.
  * @param {number} [options.timeline_limit=5] - Maximum recent session entries to include.
+ * @param {string} [options.git_remote] - Optional git remote URL for remote/virtual binding.
  * @returns {Object} Hydrated status object with formatted summary text.
  */
 export function checkMemoryStatus(
     projectPath,
-    { include_timeline = true, timeline_limit = 5 } = {}
+    { include_timeline = true, timeline_limit = 5, git_remote } = {}
 ) {
-    const { storeInfo, migration, db } = prepareStore(projectPath, { createIfMissing: false });
+    const { storeInfo, migration, db } = prepareStore(projectPath, {
+        createIfMissing: false,
+        gitRemote: git_remote
+    });
     const banner = formatMigrationBanner(migration);
+
+    const noticeParts = [
+        formatGitConflictNotice(storeInfo),
+        formatCloneDisambiguationNotice(storeInfo)
+    ].filter(Boolean);
+    const noticesSuffix = noticeParts.length > 0 ? "\n\n" + noticeParts.join("\n\n") : "";
 
     if (!db) {
         return {
             initialized: false,
             storeInfo,
             migration,
+            gitIdentityConflict: storeInfo.gitIdentityConflict || null,
+            duplicateCloneCandidate: storeInfo.duplicateCloneCandidate || null,
             text:
                 banner +
-                `UNINITIALIZED: No project memory found for "${storeInfo.canonicalPath}". You must bootstrap the project memory by saving foundational nodes ("Tech Stack & Ecosystem", "Project Structure & Architecture", "Build & Run Instructions").`
+                `UNINITIALIZED: No project memory found for "${storeInfo.canonicalPath}". You must bootstrap the project memory by saving foundational nodes ("Tech Stack & Ecosystem", "Project Structure & Architecture", "Build & Run Instructions").` +
+                noticesSuffix
         };
     }
 
@@ -73,9 +92,12 @@ export function checkMemoryStatus(
             initialized: false,
             storeInfo,
             migration,
+            gitIdentityConflict: storeInfo.gitIdentityConflict || null,
+            duplicateCloneCandidate: storeInfo.duplicateCloneCandidate || null,
             text:
                 banner +
-                `UNINITIALIZED: Memory store exists for "${storeInfo.canonicalPath}" but has 0 active entries. You must bootstrap the project memory.`
+                `UNINITIALIZED: Memory store exists for "${storeInfo.canonicalPath}" but has 0 active entries. You must bootstrap the project memory.` +
+                noticesSuffix
         };
     }
 
@@ -134,10 +156,16 @@ export function checkMemoryStatus(
         }
     }
 
+    if (noticeParts.length > 0) {
+        sections.push("", ...noticeParts);
+    }
+
     return {
         initialized: true,
         storeInfo,
         migration,
+        gitIdentityConflict: storeInfo.gitIdentityConflict || null,
+        duplicateCloneCandidate: storeInfo.duplicateCloneCandidate || null,
         totalActive,
         countsByCategory,
         deadEndCount,

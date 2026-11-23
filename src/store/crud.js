@@ -5,17 +5,19 @@
  * and `searchProjectMemory` (BM25 weighted full-text search with dead-end cross-checking).
  */
 
-import crypto from "node:crypto";
-import { openDatabase, syncMemoryFts, searchFts } from "../db/index.js";
+import { getProjectStoreInfo, linkProjectIdentity } from "../paths.js";
+import { syncMemoryFts, searchFts } from "../db/index.js";
 import {
     cleanTags,
-    cleanFiles,
     inferCategoryAndSlugForSave,
     generateUniqueId,
     prepareStore,
     formatMigrationBanner,
+    formatCloneDisambiguationNotice,
+    resolveAndGuardFiles,
     smartPreview
 } from "./helpers.js";
+import { resolveStoreLinkedFolders } from "./workspace.js";
 import { checkDeadEnds } from "./dead-ends.js";
 
 /**
@@ -57,26 +59,39 @@ function withTransaction(db, fn) {
  * Saves a single memory entry or atomic batch of entries to the project store.
  * Automatically handles canonical slugs, updates existing matching nodes in-place,
  * archives previous versions into the `revisions` table, and synchronizes FTS5 indexes.
+ * Enforces clone-disambiguation and cross-folder file guardrails before opening a transaction.
  *
- * @param {string} projectPath - Target workspace root directory.
+ * @param {string} projectPath - Target workspace root directory or remote URI.
  * @param {Object} args - Arguments.
  * @param {string} [args.title] - Memory title.
  * @param {string} [args.summary] - Full memory markdown/text context.
  * @param {Array<string>} [args.tags] - Keyword tags.
- * @param {Array<string>} [args.files] - Referenced workspace-relative files.
+ * @param {Array<string>} [args.files] - Referenced workspace-relative or `@<slug>/` files.
  * @param {string} [args.category] - Category classification.
  * @param {string} [args.slug] - Canonical slug (e.g. 'tech-stack').
  * @param {string} [args.id] - Optional ID to update in-place.
  * @param {Array<Object>} [args.entries] - Batch of entries for atomic multi-entry save.
- * @returns {{ saved: Array<Object>, text: string }} Saved memory records.
+ * @param {string} [args.git_remote] - Optional git remote URL for remote/virtual binding.
+ * @param {boolean} [args.allow_external_files=false] - Override cross-folder write guardrail.
+ * @param {boolean} [args.force_isolate=false] - Isolate simultaneous clone store before writing.
+ * @returns {{ isError: boolean, results?: Array<Object>, storeInfo?: Object, text: string }} Saved memory records or guardrail error.
  */
 export function saveProjectMemory(
     projectPath,
-    { title, summary, tags, files, category, slug, id, entries } = {}
+    {
+        title,
+        summary,
+        tags,
+        files,
+        category,
+        slug,
+        id,
+        entries,
+        git_remote,
+        allow_external_files = false,
+        force_isolate = false
+    } = {}
 ) {
-    const { storeInfo, migration, db } = prepareStore(projectPath, { createIfMissing: true });
-    const banner = formatMigrationBanner(migration);
-
     const itemsToSave = [];
     if (Array.isArray(entries) && entries.length > 0) {
         for (const e of entries) {
@@ -90,6 +105,54 @@ export function saveProjectMemory(
         }
         itemsToSave.push({ title, summary, tags, files, category, slug, id });
     }
+
+    const cleanGitRemote = typeof git_remote === "string" && git_remote.trim() ? git_remote.trim() : "";
+    const previewStoreInfo = getProjectStoreInfo(
+        projectPath,
+        cleanGitRemote ? { gitRemote: cleanGitRemote } : undefined
+    );
+
+    if (previewStoreInfo.duplicateCloneCandidate && force_isolate !== true) {
+        return {
+            isError: true,
+            text: formatCloneDisambiguationNotice(previewStoreInfo)
+        };
+    }
+
+    const linkedFolders = resolveStoreLinkedFolders(previewStoreInfo);
+    const allInputFiles = itemsToSave.flatMap((item) => (Array.isArray(item.files) ? item.files : []));
+    const batchGuard = resolveAndGuardFiles(previewStoreInfo, allInputFiles, {
+        allowExternal: allow_external_files,
+        linkedFolders
+    });
+    if (batchGuard.isError) {
+        return {
+            isError: true,
+            text: batchGuard.text
+        };
+    }
+
+    const preparedItems = itemsToSave.map((item) => ({
+        item,
+        cleanedFiles: resolveAndGuardFiles(previewStoreInfo, item.files, {
+            allowExternal: true,
+            linkedFolders
+        }).files
+    }));
+
+    if (previewStoreInfo.duplicateCloneCandidate && force_isolate === true) {
+        linkProjectIdentity({
+            projectPath,
+            gitRemote: cleanGitRemote || undefined,
+            isolate: true
+        });
+    }
+
+    const { storeInfo, migration, db } = prepareStore(projectPath, {
+        createIfMissing: true,
+        gitRemote: cleanGitRemote || undefined
+    });
+    const banner = formatMigrationBanner(migration);
 
     const savedResults = [];
 
@@ -115,12 +178,11 @@ export function saveProjectMemory(
             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
         `);
 
-        for (const item of itemsToSave) {
+        for (const { item, cleanedFiles } of preparedItems) {
             const cleanT = (item.title || "").trim();
             const cleanS = (item.summary || "").trim();
             const { category: finalCategory, slug: finalSlug } = inferCategoryAndSlugForSave(item);
             const cleanedTags = cleanTags(item.tags);
-            const cleanedFiles = cleanFiles(storeInfo.canonicalPath, item.files);
             const now = new Date().toISOString();
 
             let targetRecord = null;
@@ -199,6 +261,7 @@ export function saveProjectMemory(
     );
 
     return {
+        isError: false,
         results: savedResults,
         storeInfo,
         text:

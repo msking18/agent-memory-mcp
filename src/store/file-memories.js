@@ -5,7 +5,13 @@
  * workspace files about to be modified.
  */
 
-import { prepareStore, formatMigrationBanner, cleanFiles, smartPreview } from "./helpers.js";
+import {
+    prepareStore,
+    formatMigrationBanner,
+    resolveAndGuardFiles,
+    smartPreview
+} from "./helpers.js";
+import { resolveStoreLinkedFolders } from "./workspace.js";
 
 /**
  * Safely parses a JSON array string with fallback to empty array.
@@ -43,7 +49,11 @@ export function getFileMemories(
         return { memories: [], deadEnds: [], text: banner + "No file memories found (project memory uninitialized)." };
     }
 
-    const normalizedTargets = cleanFiles(storeInfo.canonicalPath, file_paths || []);
+    const linkedFolders = resolveStoreLinkedFolders(storeInfo);
+    const normalizedTargets = resolveAndGuardFiles(storeInfo, file_paths || [], {
+        allowExternal: true,
+        linkedFolders
+    }).files;
     if (normalizedTargets.length === 0) {
         throw new Error("get_file_memories requires a non-empty file_paths array.");
     }

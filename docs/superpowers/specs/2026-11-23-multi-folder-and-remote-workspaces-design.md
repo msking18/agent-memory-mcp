@@ -106,10 +106,9 @@ For any locally accessible directory (`isRemote === false`), `detectGitIdentity(
 1. **Recognized remote URI schemes:** `vscode-remote:`, `ssh:`, `wsl:`, `devcontainer:`, `remote:`.
    - Note: `file://` continues to be unwrapped to a local path via `fileURLToPath` as before (unless it carries a non-local remote authority).
 2. **Windows WSL UNC paths & bidirectional WSL aliasing `(Agent's call)`:**
-   - Detect `\\wsl.localhost\<distro>\...` and `\\wsl$\<distro>\...` (or forward-slash equivalents).
-   - Attempt local `fs.statSync` first (so mounted/running WSL distros work locally with `mtime` staleness checks).
-   - If `fs.statSync` fails with `ENOENT` or `EACCES`/`ENOTFOUND` (e.g., stopped distro or inaccessible UNC share), fall back cleanly to virtual mode (`isRemote: true`, `remoteScheme: "wsl"`, normalized canonical form `wsl://<distro>/<posix-path>`).
-   - **Bidirectional WSL alias matching:** Compute deterministic WSL equivalents (`wsl://<distro>/<posix-path>`, `//wsl.localhost/<distro>/<posix-path>`, `//wsl$/<distro>/<posix-path>`) during Steps 2–3 of store lookup so a running WSL workspace and a stopped-WSL / `wsl://` virtual URI automatically resolve to the same store even when no `gitIdentity` is present.
+   - Detect `\\wsl.localhost\<distro>\...` and `\\wsl$\<distro>\...` (or forward-slash equivalents) via `isWslUncPath`.
+   - Canonicalize directly to virtual mode (`isRemote: true`, `remoteScheme: "wsl"`, normalized canonical form `wsl://<distro>/<posix-path>`) **without** calling `fs.statSync` or `fs.existsSync` (avoiding Windows 11's `wsl.exe` installer pop-up or cold-booting stopped WSL VMs). Guard legacy WSL UNC entries in `projects_index.json` against `fs.existsSync` during Step 3 / canonical-path checks.
+   - **Bidirectional WSL alias matching:** Compute deterministic WSL equivalents (`wsl://<distro>/<posix-path>`, `//wsl.localhost/<distro>/<posix-path>`, `//wsl$/<distro>/<posix-path>`) during Steps 1–3 of store lookup so any `wsl://` virtual URI or WSL UNC path automatically resolves to the same store even when no `gitIdentity` is present.
 3. **Remote URI validation & canonicalization:**
    - Reject null bytes (`\0`), ASCII control characters, empty scheme authority/host, or path traversal segments (`..` or `.` after splitting on `/`).
    - Normalize repeated slashes and strip trailing slashes (preserving root `/`).

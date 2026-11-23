@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { detectGitIdentity, normalizeGitRemoteUrl } from "./git.js";
 import {
     isRemoteUri,
+    isWslUncPath,
     validateOrParseProjectPath,
     getWslEquivalentKeys,
     normalizeForIndexCompare
@@ -424,6 +425,13 @@ function findExistingLegacyPathDb(parsed, storesDir) {
     return null;
 }
 
+function isEntryMissingFromDisk(canonicalPath, isRemoteFlag = false) {
+    if (!canonicalPath || isRemoteFlag || isRemoteUri(canonicalPath) || isWslUncPath(canonicalPath)) {
+        return false;
+    }
+    return !fs.existsSync(canonicalPath);
+}
+
 function resolveMatchedEntryConflict(entry, storeKey, liveGitIdentity, allProjects) {
     const effectiveGitIdentity = liveGitIdentity || entry?.gitIdentity || null;
     const optedOut = Boolean(
@@ -530,9 +538,16 @@ export function getProjectStoreInfo(rawPath, options = {}) {
 
         if (gitMatches.length > 0) {
             const autoShareMatch = gitMatches.find(({ entry, sameCommonDir }) => {
-                if (parsed.isRemote || entry.isRemote) return true;
+                if (
+                    parsed.isRemote ||
+                    entry.isRemote ||
+                    isRemoteUri(entry.canonicalPath) ||
+                    isWslUncPath(entry.canonicalPath)
+                ) {
+                    return true;
+                }
                 if (sameCommonDir) return true;
-                if (entry.canonicalPath && !fs.existsSync(entry.canonicalPath)) return true;
+                if (isEntryMissingFromDisk(entry.canonicalPath, entry.isRemote)) return true;
                 return false;
             });
 
@@ -645,7 +660,7 @@ function resolveCanonicalAndAliases(existing, callerParsed) {
     }
 
     const prevCanonical = existing.canonicalPath;
-    const prevMissingLocal = Boolean(prevCanonical) && !existing.isRemote && !fs.existsSync(prevCanonical);
+    const prevMissingLocal = isEntryMissingFromDisk(prevCanonical, existing.isRemote);
 
     let canonicalPath;
     let isRemote;
@@ -1214,7 +1229,7 @@ export function inspectWorkspace({ projectPath, workspacePaths = [] }) {
                     canonicalPath: null,
                     normalizedForHash: null,
                     storeKey: null,
-                    isRemote: isRemoteUri(rawFolder),
+                    isRemote: isRemoteUri(rawFolder) || isWslUncPath(rawFolder),
                     gitIdentity: null,
                     resolvedVia: null,
                     initialized: false,

@@ -1,7 +1,7 @@
 /**
  * @file src/paths/remote.js
- * @description Remote workspace URI validation/canonicalization, Windows WSL UNC
- * fallback, bidirectional WSL aliasing, and strict local path validation.
+ * @description Remote workspace URI validation/canonicalization, non-probing Windows WSL UNC
+ * canonicalization, bidirectional WSL aliasing, and strict local path validation.
  */
 
 import fs from "node:fs";
@@ -17,6 +17,7 @@ export const REMOTE_SCHEMES = new Set([
 ]);
 
 const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
+const WSL_UNC_PREFIX_RE = /^(\\\\|\/\/)wsl(\.localhost|\$)[\\/][^\\/]+/i;
 const WSL_UNC_RE = /^(\\\\|\/\/)wsl(\.localhost|\$)[\\/]([^\\/]+)(.*)$/i;
 const WSL_URI_RE = /^wsl:\/\/([^/]+)(.*)$/i;
 
@@ -132,36 +133,15 @@ function parseRemoteUri(cleaned, rawPath) {
     };
 }
 
-function parseWslUncOrFallback(cleaned, rawPath, uncMatch) {
+function parseWslUncOrFallback(rawPath, uncMatch) {
     const distro = uncMatch[3];
     const rest = uncMatch[4] || "";
     if (!distro || distro === "." || distro === "..") {
         throw new Error(`Invalid WSL UNC project_path "${rawPath}": invalid distribution name.`);
     }
 
-    // Probe local filesystem first when running on Windows with a live WSL distro.
-    const fsCandidate = path.resolve(cleaned);
-    let stat = null;
-    try {
-        stat = fs.statSync(fsCandidate);
-    } catch {
-        stat = null;
-    }
-
-    if (stat !== null) {
-        if (!stat.isDirectory()) {
-            throw new Error(`Invalid project_path "${fsCandidate}": path is a file, expected a directory.`);
-        }
-        const canonicalPath = resolveRealPath(fsCandidate);
-        return {
-            canonicalPath,
-            normalizedForHash: normalizeLocalForHash(canonicalPath),
-            slug: sanitizeSlug(path.basename(canonicalPath) || "root"),
-            isRemote: false,
-            remoteScheme: null
-        };
-    }
-
+    // Never probe Windows WSL UNC paths with fs.statSync/existsSync; on Windows 11
+    // probing \\wsl.localhost\... triggers the built-in wsl.exe installer or VM boot.
     const rawPosix = rest ? (rest.startsWith("/") || rest.startsWith("\\") ? rest : `/${rest}`) : "/";
     const { normalizedPath, segments } = validateRemotePathSegments(rawPosix, rawPath);
     const canonicalPath = `wsl://${distro.toLowerCase()}${normalizedPath}`;
@@ -174,6 +154,15 @@ function parseWslUncOrFallback(cleaned, rawPath, uncMatch) {
         isRemote: true,
         remoteScheme: "wsl"
     };
+}
+
+/**
+ * Checks whether rawPath is a Windows WSL UNC path (`\\wsl.localhost\<distro>\...`
+ * or `\\wsl$\<distro>\...`, or forward-slash equivalents).
+ */
+export function isWslUncPath(rawPath) {
+    if (typeof rawPath !== "string") return false;
+    return WSL_UNC_PREFIX_RE.test(rawPath.trim());
 }
 
 /**
@@ -192,7 +181,7 @@ export function isRemoteUri(rawPath) {
 
 /**
  * Validates and canonicalizes either a remote workspace URI, a Windows WSL UNC path
- * (with automatic `wsl://` remote fallback when unreachable), or a strict local directory path.
+ * (canonicalized directly to virtual `wsl://` without `fs.statSync`), or a strict local directory path.
  */
 export function validateOrParseProjectPath(rawPath) {
     if (typeof rawPath !== "string" || !rawPath.trim()) {
@@ -213,7 +202,7 @@ export function validateOrParseProjectPath(rawPath) {
 
     const initialUncMatch = cleaned.match(WSL_UNC_RE);
     if (initialUncMatch) {
-        return parseWslUncOrFallback(cleaned, rawPath, initialUncMatch);
+        return parseWslUncOrFallback(rawPath, initialUncMatch);
     }
 
     if (cleaned.startsWith("file://")) {
@@ -231,7 +220,7 @@ export function validateOrParseProjectPath(rawPath) {
         }
         const unwrappedUncMatch = cleaned.match(WSL_UNC_RE);
         if (unwrappedUncMatch) {
-            return parseWslUncOrFallback(cleaned, rawPath, unwrappedUncMatch);
+            return parseWslUncOrFallback(rawPath, unwrappedUncMatch);
         }
     } else if (process.platform === "win32" && /^\/[a-zA-Z]:[\\/]/.test(cleaned)) {
         cleaned = cleaned.slice(1);

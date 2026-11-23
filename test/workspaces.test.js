@@ -15,6 +15,7 @@ import {
 import {
     REMOTE_SCHEMES,
     isRemoteUri,
+    isWslUncPath,
     getWslEquivalentKeys,
     normalizeForIndexCompare,
     validateOrParseProjectPath,
@@ -319,18 +320,47 @@ describe("Remote URI Parsing, Validation, & Bidirectional WSL Aliasing", () => {
         }
     });
 
-    it("2.3 Handles Windows WSL UNC fallback and bidirectional getWslEquivalentKeys", () => {
-        const wslLocalhost = validateOrParseProjectPath("\\\\wsl.localhost\\Ubuntu\\home\\dev\\app");
-        assert.equal(wslLocalhost.isRemote, true);
-        assert.equal(wslLocalhost.remoteScheme, "wsl");
-        assert.equal(wslLocalhost.canonicalPath, "wsl://ubuntu/home/dev/app");
-        assert.equal(wslLocalhost.slug, "app");
+    it("2.3 Canonicalizes Windows WSL UNC paths directly to virtual wsl:// without fs.statSync probe and supports bidirectional getWslEquivalentKeys", (t) => {
+        assert.equal(pathsFacade.isWslUncPath, isWslUncPath);
 
-        const wslDollar = validateOrParseProjectPath("\\\\wsl$\\Ubuntu\\home\\dev\\app");
-        assert.equal(wslDollar.isRemote, true);
-        assert.equal(wslDollar.remoteScheme, "wsl");
-        assert.equal(wslDollar.canonicalPath, "wsl://ubuntu/home/dev/app");
-        assert.equal(wslDollar.slug, "app");
+        for (const unc of [
+            "\\\\wsl.localhost\\Ubuntu\\home\\dev\\app",
+            "//wsl.localhost/Ubuntu/home/dev/app",
+            "\\\\wsl$\\Ubuntu-22.04\\home\\dev\\app",
+            "//wsl$/Ubuntu/home/dev/app",
+            "  \\\\WSL.LOCALHOST\\Ubuntu\\  "
+        ]) {
+            assert.equal(isWslUncPath(unc), true, `Expected isWslUncPath true for: ${unc}`);
+        }
+        for (const nonUnc of [
+            "wsl://ubuntu/home/dev/app",
+            "/tmp/local-project",
+            "C:\\Users\\dev\\app",
+            "\\\\server\\share\\folder",
+            "",
+            null,
+            undefined
+        ]) {
+            assert.equal(isWslUncPath(nonUnc), false, `Expected isWslUncPath false for: ${nonUnc}`);
+        }
+
+        const statSpy = t.mock.method(fs, "statSync");
+
+        for (const uncInput of [
+            "\\\\wsl.localhost\\Ubuntu\\home\\dev\\app",
+            "//wsl.localhost/Ubuntu/home/dev/app",
+            "\\\\wsl$\\Ubuntu\\home\\dev\\app",
+            "//wsl$/Ubuntu/home/dev/app"
+        ]) {
+            const parsed = validateOrParseProjectPath(uncInput);
+            assert.equal(parsed.isRemote, true);
+            assert.equal(parsed.remoteScheme, "wsl");
+            assert.equal(parsed.canonicalPath, "wsl://ubuntu/home/dev/app");
+            assert.equal(parsed.normalizedForHash, "wsl://ubuntu/home/dev/app");
+            assert.equal(parsed.slug, "app");
+        }
+
+        assert.equal(statSpy.mock.callCount(), 0, "fs.statSync must never be called for WSL UNC paths");
 
         const fromWsl = getWslEquivalentKeys("wsl://ubuntu/home/dev/app");
         assert.ok(fromWsl.includes("//wsl.localhost/ubuntu/home/dev/app"));
@@ -702,7 +732,7 @@ describe("Locked projects_index.json v4 Registry, 4-Step Resolution, Upgrade Lif
         assert.equal(infoC2Isolated.gitIdentityConflict, null);
     });
 
-    it("3.6 Links deleted/moved source_project_path, pre-registers new remote git_remote without empty DB, and matches WSL bidirectional aliases", () => {
+    it("3.6 Links deleted/moved source_project_path, pre-registers new remote git_remote without empty DB, matches WSL bidirectional aliases, and never probes legacy WSL UNC entries", (t) => {
         // 1) Deleted source_project_path linking
         const oldDir = path.join(tempRoot, "old-draft-app");
         const newDir = path.join(tempRoot, "new-draft-app");
@@ -750,6 +780,46 @@ describe("Locked projects_index.json v4 Registry, 4-Step Resolution, Upgrade Lif
         const viaDollar = getProjectStoreInfo("\\\\wsl$\\Ubuntu\\home\\dev\\wsl-proj");
         assert.equal(viaDollar.storeKey, wslInfo.storeKey);
         assert.equal(viaDollar.resolvedVia, "index_alias");
+
+        // 4) Legacy WSL UNC entry (isRemote: false) must never trigger fs.existsSync
+        const legacyUncKey = "legacy-wsl-001122334455";
+        updateProjectsIndex((idx) => {
+            idx.projects[legacyUncKey] = {
+                storeKey: legacyUncKey,
+                canonicalPath: "\\\\wsl.localhost\\Ubuntu\\home\\dev\\legacy-wsl",
+                aliases: [],
+                gitIdentity: "github.com/org/legacy-wsl",
+                gitIdentityAliases: [],
+                gitCommonDir: null,
+                isolatedGitIdentity: null,
+                isRemote: false,
+                dbFile: `${legacyUncKey}.db`,
+                firstSeenAt: "2026-11-23T00:00:00.000Z",
+                lastAccessedAt: "2026-11-23T00:00:00.000Z"
+            };
+        });
+
+        const localTwin = path.join(tempRoot, "legacy-wsl-twin");
+        fs.mkdirSync(path.join(localTwin, ".git"), { recursive: true });
+        fs.writeFileSync(
+            path.join(localTwin, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/legacy-wsl.git\n',
+            "utf8"
+        );
+
+        const existsSpy = t.mock.method(fs, "existsSync");
+        const twinInfo = getProjectStoreInfo(localTwin);
+        assert.equal(twinInfo.storeKey, legacyUncKey);
+        assert.equal(twinInfo.resolvedVia, "git_identity");
+
+        const linkedTwin = linkProjectIdentity({ projectPath: localTwin, targetStoreKey: legacyUncKey });
+        assert.equal(linkedTwin.storeKey, legacyUncKey);
+
+        const probedWslOrRemote = existsSpy.mock.calls.filter((call) => {
+            const target = call.arguments[0];
+            return isWslUncPath(target) || isRemoteUri(target);
+        });
+        assert.equal(probedWslOrRemote.length, 0, "fs.existsSync must never probe WSL UNC or remote URI paths");
     });
 
     it("3.7 Persists workspacePolicies with auto-disambiguated folderSlug and rejects duplicate explicit folderSlug", () => {

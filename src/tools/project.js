@@ -1,8 +1,8 @@
 /**
  * @file src/tools/project.js
- * @description Project-scoped and workspace-configuration MCP tool registrations (Tools 1–10, 16).
+ * @description Project-scoped memory MCP tool registrations (Tools 1–7, 10).
  * Registers context status, timeline, atomic memory saves, FTS5 search, CRUD,
- * file-anchored memories, two-tier anti-loop dead-ends, and multi-folder/identity configuration.
+ * and file-anchored memories.
  */
 
 import { z } from "zod";
@@ -14,10 +14,7 @@ import {
     readMemoryNode,
     updateMemoryNode,
     deleteMemoryNode,
-    recordDeadEnd,
-    checkDeadEnds,
-    getFileMemories,
-    configureWorkspace
+    getFileMemories
 } from "../store/index.js";
 import {
     executeTool,
@@ -29,7 +26,7 @@ import {
 } from "./common.js";
 
 /**
- * Registers all project-scoped and workspace-configuration tools (1–10, 16) on an McpServer instance.
+ * Registers project-scoped memory tools (1–7, 10) on an McpServer instance.
  *
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server - McpServer instance.
  */
@@ -325,93 +322,6 @@ export function registerProjectTools(server) {
         }
     );
 
-    // 8. record_dead_end
-    server.registerTool(
-        "record_dead_end",
-        {
-            title: "Record Anti-Loop Dead-End or Architectural Constraint",
-            description:
-                "Record a failed debugging attempt or intentional architectural constraint so future turns and sessions never repeat the same dead-end.",
-            inputSchema: {
-                project_path: z
-                    .string()
-                    .describe("Absolute path to the project workspace root or remote workspace URI"),
-                error_pattern: z
-                    .string()
-                    .min(1)
-                    .describe("Compiler error, test failure, or symptom encountered"),
-                attempted_solution: z
-                    .string()
-                    .min(1)
-                    .describe("What fix or approach was tried and failed"),
-                root_cause: z
-                    .string()
-                    .min(1)
-                    .describe("Why the approach failed or constraint discovered"),
-                files: z
-                    .array(z.string())
-                    .optional()
-                    .default([])
-                    .describe("Workspace-relative file paths or '@<folderSlug>/' linked-folder anchors involved"),
-                kind: z
-                    .enum(["error_loop", "architectural"])
-                    .optional()
-                    .default("error_loop")
-                    .describe("Taxonomy kind: 'error_loop' for code/test bug, 'architectural' for intentional trade-off / rejected approach"),
-                constraints: z
-                    .array(z.string())
-                    .optional()
-                    .default([])
-                    .describe("Active constraints or invariants that forbid this approach"),
-                allow_external_files: z
-                    .boolean()
-                    .optional()
-                    .default(false)
-                    .describe(
-                        "Explicit user-approved override allowing file paths outside project_path (cross-folder write guardrail)"
-                    )
-            },
-            annotations: WRITE_ANNOTATIONS
-        },
-        async (args) => {
-            return executeTool("record_dead_end", args, () =>
-                recordDeadEnd(args.project_path, args)
-            );
-        }
-    );
-
-    // 9. check_dead_ends
-    server.registerTool(
-        "check_dead_ends",
-        {
-            title: "Check Recorded Dead-Ends",
-            description:
-                "Check the anti-loop dead-end registry by error text, keyword, or file path before attempting fixes.",
-            inputSchema: {
-                project_path: z
-                    .string()
-                    .describe("Absolute path to the project workspace root or remote workspace URI"),
-                query: z
-                    .string()
-                    .optional()
-                    .describe("Error message, symptom, or keyword to match"),
-                file_path: z.string().optional().describe("Optional workspace or linked-folder file path to match"),
-                limit: z.number().int().min(1).max(25).optional().default(10),
-                kind: z
-                    .enum(["all", "error_loop", "architectural"])
-                    .optional()
-                    .default("all")
-                    .describe("Filter by dead-end kind ('all', 'error_loop', 'architectural')")
-            },
-            annotations: READ_ONLY_ANNOTATIONS
-        },
-        async (args) => {
-            return executeTool("check_dead_ends", args, () =>
-                checkDeadEnds(args.project_path, args)
-            );
-        }
-    );
-
     // 10. get_file_memories
     server.registerTool(
         "get_file_memories",
@@ -434,77 +344,6 @@ export function registerProjectTools(server) {
         async (args) => {
             return executeTool("get_file_memories", args, () =>
                 getFileMemories(args.project_path, args)
-            );
-        }
-    );
-
-    // 16. configure_workspace
-    server.registerTool(
-        "configure_workspace",
-        {
-            title: "Configure Multi-Folder Workspace Policies & Project Identity",
-            description:
-                "Persist secondary folder policies ('independent', 'linked', 'ignored'), link or isolate project store identities across moved folders, worktrees, simultaneous clones, or remote URIs, or inspect resolved workspace store metadata without mutating user repositories.",
-            inputSchema: {
-                action: z
-                    .enum(["set_folder_policy", "link_project_identity", "inspect"])
-                    .describe("Configuration action: 'set_folder_policy', 'link_project_identity', or 'inspect'"),
-                project_path: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "Absolute workspace root path or remote URI (required for 'link_project_identity' and 'inspect')"
-                    ),
-                primary_path: z
-                    .string()
-                    .optional()
-                    .describe("Primary workspace root path or remote URI (required for 'set_folder_policy')"),
-                folder_path: z
-                    .string()
-                    .optional()
-                    .describe("Secondary workspace folder path or remote URI (required for 'set_folder_policy')"),
-                mode: z
-                    .enum(["independent", "linked", "ignored"])
-                    .optional()
-                    .describe("Secondary folder policy mode (required for 'set_folder_policy')"),
-                folder_slug: z
-                    .string()
-                    .optional()
-                    .describe("Optional custom '@<slug>/' anchor prefix when mode is 'linked' (auto-disambiguated if omitted)"),
-                source_project_path: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "Previous/moved workspace path in projects_index.json to link from (does not require path to still exist on disk)"
-                    ),
-                git_remote: z
-                    .string()
-                    .optional()
-                    .describe(
-                        "Git remote URL (with optional '#subpath') to bind or share a project store across local/remote checkouts"
-                    ),
-                target_store_key: z
-                    .string()
-                    .optional()
-                    .describe("Existing storeKey in projects_index.json to link this workspace to"),
-                isolate: z
-                    .boolean()
-                    .optional()
-                    .describe(
-                        "If true for 'link_project_identity', isolate a simultaneous clone into its own independent store"
-                    ),
-                workspace_paths: z
-                    .array(z.string())
-                    .optional()
-                    .describe(
-                        "Optional list of open workspace root paths for 'inspect' to evaluate policies and reverse links"
-                    )
-            },
-            annotations: WRITE_ANNOTATIONS
-        },
-        async (args) => {
-            return executeTool("configure_workspace", args, () =>
-                configureWorkspace(args)
             );
         }
     );

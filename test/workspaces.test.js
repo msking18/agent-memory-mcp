@@ -39,9 +39,11 @@ import {
     inspectWorkspace
 } from "../src/paths/registry.js";
 import {
-    normalizeWorkspaceRelativePath,
-    classifyWorkspaceFiles
+    normalizeWorkspaceRelativePath
 } from "../src/paths/files.js";
+import {
+    classifyWorkspaceFiles
+} from "../src/paths/classifier.js";
 import * as pathsFacade from "../src/paths.js";
 import { closeAllDatabases } from "../src/db.js";
 import { runSessionStartPayload } from "../src/session-start-hook.js";

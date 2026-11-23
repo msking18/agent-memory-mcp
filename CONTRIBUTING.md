@@ -37,6 +37,7 @@ The test suite covers:
 - Non-destructive corruption quarantine.
 - Atomic batch operations, FTS5 searches, and multi-word OR fallbacks.
 - File staleness warnings, dead-end registries, and file-anchored memories.
+- Multi-folder workspace policies (`independent`, `linked`, `ignored`), remote URIs, and zero-process git identity linking.
 - `SessionStart` hook I/O contracts.
 - Stdio MCP JSON-RPC protocol compliance and tool annotations.
 
@@ -55,14 +56,21 @@ agent-memory-mcp/
 ├── rules/AGENTS.md           # Antigravity scoped rules
 ├── skills/agent-memory/      # Skill reference for AI agents
 ├── src/
-│   ├── paths.js              # Safe directory normalization & project hashing
-│   ├── db.js                 # SQLite WAL connection & FTS5 search logic
-│   ├── migrate.js            # Zero-data-loss JIT legacy migrator
-│   ├── store.js              # Business logic for all 10 MCP tools
-│   ├── server.js             # McpServer registration & ToolAnnotations
-│   └── session-start-hook.js # Sub-25ms SessionStart context injector
+│   ├── paths.js              # Re-export barrel for src/paths/
+│   ├── paths/                # Git identity, remote URIs, file classifier & registry/
+│   ├── db.js                 # Re-export barrel for src/db/
+│   ├── db/                   # SQLite WAL connection, FTS5 search & schema migrations
+│   ├── migrate.js            # Re-export barrel for src/migrate/
+│   ├── migrate/              # Zero-data-loss JIT legacy migrator & lock manager
+│   ├── store.js              # Re-export barrel for src/store/
+│   ├── store/                # Business logic for all 16 MCP tools
+│   ├── tools/                # McpServer tool registrations (project, dead-ends, workspace, global)
+│   ├── server.js             # McpServer instance & transport initialization
+│   └── session-start-hook.js # Multi-folder SessionStart context injector
 └── test/
-    └── memory.test.js        # Automated end-to-end test suite
+    ├── helpers/              # Shared test fixtures & MCP client helpers
+    ├── core/                 # Core v3.0–v3.2 memory, FTS5, global & token budget suites
+    └── workspaces/           # Multi-folder workspace, git identity & remote URI suites
 ```
 
 ---
@@ -70,6 +78,6 @@ agent-memory-mcp/
 ## 📜 Pull Request Guidelines
 
 1. Make sure all automated tests pass (`npm test`).
-2. If adding or modifying an MCP tool, add corresponding test cases in `test/memory.test.js`.
+2. If adding or modifying an MCP tool, add corresponding test cases under `test/core/` or `test/workspaces/` (and ensure they are executed by `npm test`).
 3. Keep runtime dependencies to an absolute minimum (the engine relies on standard Node APIs and `@modelcontextprotocol/sdk`).
-4. Follow the existing ESLint and code style conventions.
+4. Keep every `.js` file at or below 500 physical lines and follow the existing code style conventions.

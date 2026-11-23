@@ -7,12 +7,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { getDataRoot } from "./registry.js";
+import { getDataRoot } from "./registry/index.js";
 
 export * from "./git.js";
 export * from "./remote.js";
-export * from "./registry.js";
+export * from "./registry/index.js";
 export * from "./files.js";
+export * from "./classifier.js";
 
 export function getGlobalDbPath() {
     return path.join(getDataRoot(), "global.db");

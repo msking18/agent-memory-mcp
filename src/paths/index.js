@@ -12,6 +12,7 @@ import { getDataRoot } from "./registry.js";
 export * from "./git.js";
 export * from "./remote.js";
 export * from "./registry.js";
+export * from "./files.js";
 
 export function getGlobalDbPath() {
     return path.join(getDataRoot(), "global.db");
@@ -59,27 +60,4 @@ export function loadConfig() {
                 ? fileConfig.max_audit_log_entries
                 : DEFAULT_CONFIG.max_audit_log_entries
     };
-}
-
-/**
- * Normalizes any file path (absolute inside workspace or workspace-relative)
- * to a clean forward-slash relative path like "src/lib/auth.ts".
- * (Retained here temporarily until Task 4 moves workspace file classification into `src/paths/files.js`.)
- */
-export function normalizeWorkspaceRelativePath(canonicalProjectPath, targetFile) {
-    if (typeof targetFile !== "string" || !targetFile.trim()) return null;
-    let cleaned = targetFile.trim().replace(/\\/g, "/");
-    if (cleaned.startsWith("./")) cleaned = cleaned.slice(2);
-
-    const candidateAbs = path.isAbsolute(targetFile.trim())
-        ? path.resolve(targetFile.trim())
-        : path.resolve(canonicalProjectPath, cleaned);
-
-    const rel = path.relative(canonicalProjectPath, candidateAbs).replace(/\\/g, "/");
-    if (!rel || rel === ".") return null;
-    // If path points outside workspace ("../..."), keep normalized string safely trimmed
-    if (rel.startsWith("..")) {
-        return cleaned.replace(/^\/+/, "");
-    }
-    return rel;
 }

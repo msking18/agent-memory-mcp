@@ -198,7 +198,7 @@ describe("Remote URI Parsing, Validation, & Bidirectional WSL Aliasing", () => {
         assert.equal(parsedLocal.slug, "existing-app");
         assert.equal(validateProjectPath(realDir), parsedLocal.canonicalPath);
         assert.equal(validateProjectPath(pathToFileURL(realDir).href), parsedLocal.canonicalPath);
-        const upperFileUri = pathToFileURL(realDir).href.replace(/^file:/, "FILE:");
+        const upperFileUri = pathToFileURL(parsedLocal.canonicalPath).href.replace(/^file:/, "FILE:");
         assert.equal(validateProjectPath(upperFileUri), parsedLocal.canonicalPath);
         assert.equal(
             normalizeForIndexCompare(upperFileUri, false),

@@ -42,7 +42,17 @@ describe("Registry Linking, Multi-Folder Policies & Isolation Edge Cases", () =>
         registerProjectInIndex(infoOld);
         fs.rmSync(oldDir, { recursive: true, force: true });
 
-        const linkDeleted = linkProjectIdentity({ projectPath: newDir, sourceProjectPath: oldDir });
+        // Simulate macOS /var/folders symlink or Windows 8.3 short-path parent when leaf is deleted
+        const aliasParent = path.join(tempRoot, "alias-parent-link");
+        let sourceLookupPath = oldDir;
+        try {
+            fs.symlinkSync(tempRoot, aliasParent, process.platform === "win32" ? "junction" : "dir");
+            sourceLookupPath = path.join(aliasParent, "old-draft-app");
+        } catch {
+            // Fallback to oldDir if symlink creation is restricted
+        }
+
+        const linkDeleted = linkProjectIdentity({ projectPath: newDir, sourceProjectPath: sourceLookupPath });
         assert.equal(linkDeleted.storeKey, infoOld.storeKey);
         const resolvedNew = getProjectStoreInfo(newDir);
         assert.equal(resolvedNew.storeKey, infoOld.storeKey);

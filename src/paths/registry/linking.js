@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { detectGitIdentity } from "../git.js";
+import { realpathSyncSafe } from "../files.js";
 import {
     isRemoteUri,
     isWslUncPath,
@@ -160,7 +161,14 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
 
         if (sourceProjectPath) {
             const sourceUnchecked = normalizeUncheckedSourcePath(sourceProjectPath);
-            const sourceKeys = buildLookupKeys(sourceUnchecked, isRemoteUri(sourceUnchecked));
+            const sourceIsRemote = isRemoteUri(sourceUnchecked) || isWslUncPath(sourceUnchecked);
+            const sourceKeys = buildLookupKeys(sourceUnchecked, sourceIsRemote);
+            if (!sourceIsRemote) {
+                const resolvedAncestorPath = realpathSyncSafe(sourceUnchecked);
+                for (const k of buildLookupKeys(resolvedAncestorPath, false)) {
+                    sourceKeys.add(k);
+                }
+            }
             targetEntry = findEntryByPathInIndex(index.projects, sourceKeys);
             if (!targetEntry) {
                 throw new Error(`No tracked project store found in projects_index.json for source_project_path "${sourceProjectPath}".`);

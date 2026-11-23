@@ -296,6 +296,7 @@ export function checkEntryFileStaleness(
 
     for (const rel of files) {
         if (typeof rel !== "string" || !rel.trim()) continue;
+        if (isRemoteUri(rel) || isWslUncPath(rel)) continue;
         const slashRel = rel.replace(/\\/g, "/");
         const anchorMatch = slashRel.match(/^@([^/]+)\/(.+)$/);
 
@@ -312,7 +313,28 @@ export function checkEntryFileStaleness(
             ) {
                 continue;
             }
-            abs = path.join(folder.canonicalPath, anchorMatch[2]);
+            const rest = anchorMatch[2];
+            if (
+                !rest ||
+                rest.split("/").includes("..") ||
+                path.isAbsolute(rest) ||
+                path.posix.isAbsolute(rest) ||
+                /^[a-zA-Z]:/.test(rest)
+            ) {
+                continue;
+            }
+            const folderRoot = path.resolve(folder.canonicalPath);
+            abs = path.resolve(folderRoot, rest);
+            const relInside = path.relative(folderRoot, abs).replace(/\\/g, "/");
+            if (
+                !relInside ||
+                relInside === "." ||
+                relInside === ".." ||
+                relInside.startsWith("../") ||
+                path.isAbsolute(relInside)
+            ) {
+                continue;
+            }
         } else {
             if (
                 rel === ".." ||

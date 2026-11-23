@@ -7,14 +7,25 @@
 
 import {
     readProjectsIndex,
-    getWorkspacePoliciesForPrimary,
     setWorkspaceFolderPolicy,
     linkProjectIdentity,
     inspectWorkspace,
     isRemoteUri,
     isWslUncPath,
+    getWslEquivalentKeys,
     normalizeForIndexCompare
 } from "../paths.js";
+
+function expandPolicyLookupKeys(rawKey) {
+    const variants = new Set([rawKey]);
+    const directNorm = normalizeForIndexCompare(rawKey, isRemoteUri(rawKey));
+    if (directNorm) variants.add(directNorm);
+    for (const eq of getWslEquivalentKeys(rawKey)) {
+        const normEq = normalizeForIndexCompare(eq, isRemoteUri(eq));
+        if (normEq) variants.add(normEq);
+    }
+    return variants;
+}
 
 /**
  * Resolves all active `linked` secondary folders configured for a store across
@@ -46,12 +57,37 @@ export function resolveStoreLinkedFolders(storeInfo) {
         candidateKeys.push(norm);
     }
 
+    const workspacePolicies =
+        index.workspacePolicies && typeof index.workspacePolicies === "object"
+            ? index.workspacePolicies
+            : {};
+
+    const policyLookup = Object.entries(workspacePolicies).map(([policyKey, bucket]) => ({
+        bucket,
+        keyVariants: expandPolicyLookupKeys(policyKey)
+    }));
+
     const linked = [];
     const seenSlugs = new Set();
     const seenFolderKeys = new Set();
 
     for (const primaryKey of candidateKeys) {
-        const policies = getWorkspacePoliciesForPrimary(primaryKey);
+        let policies = workspacePolicies[primaryKey];
+        if (!policies) {
+            const primaryVariants = expandPolicyLookupKeys(primaryKey);
+            for (const item of policyLookup) {
+                if (!item.bucket || typeof item.bucket !== "object") continue;
+                for (const pv of primaryVariants) {
+                    if (item.keyVariants.has(pv)) {
+                        policies = item.bucket;
+                        break;
+                    }
+                }
+                if (policies) break;
+            }
+        }
+        if (!policies || typeof policies !== "object") continue;
+
         for (const [secKey, policy] of Object.entries(policies)) {
             if (!policy || policy.mode !== "linked" || typeof policy.folderSlug !== "string") continue;
             const folderSlug = policy.folderSlug.trim();
@@ -135,7 +171,7 @@ function handleLinkProjectIdentity({
         sourceProjectPath: source_project_path,
         targetStoreKey: target_store_key,
         gitRemote: git_remote,
-        isolate: Boolean(isolate)
+        isolate: isolate === true
     });
 
     const lines = [

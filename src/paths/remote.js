@@ -205,7 +205,7 @@ export function validateOrParseProjectPath(rawPath) {
         return parseWslUncOrFallback(rawPath, initialUncMatch);
     }
 
-    if (cleaned.startsWith("file://")) {
+    if (/^file:\/\//i.test(cleaned)) {
         try {
             cleaned = fileURLToPath(cleaned);
         } catch {
@@ -337,7 +337,7 @@ export function normalizeForIndexCompare(rawOrCanonical, isRemote) {
         return s.length > 1 ? s.replace(/\/+$/, "") : s;
     }
 
-    if (s.startsWith("file://")) {
+    if (/^file:\/\//i.test(s)) {
         try {
             s = fileURLToPath(s);
             if (process.platform === "win32" && /^\/[a-zA-Z]:[\\/]/.test(s)) {

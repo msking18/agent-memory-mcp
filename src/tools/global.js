@@ -84,7 +84,7 @@ export function registerGlobalTools(server) {
             description:
                 "Promote a proven project-specific memory node to the machine-wide global knowledge graph in ~/.ag-memory-mcp/global.db.",
             inputSchema: {
-                project_path: z.string().describe("Absolute path to the project workspace root"),
+                project_path: z.string().describe("Absolute path to the project workspace root or remote workspace URI"),
                 memory_id: z.string().min(1).describe("Project memory node ID to promote"),
                 tech_stack: z.string().optional().default("general").describe("Tech stack identifier (e.g. 'nextjs', 'fastapi')"),
                 category: z.string().optional().describe("Optional category override (defaults to memory node category)")
@@ -106,7 +106,7 @@ export function registerGlobalTools(server) {
             description:
                 "Reopen a previously recorded dead-end when external constraints, dependencies, or requirements change.",
             inputSchema: {
-                project_path: z.string().describe("Absolute path to the project workspace root"),
+                project_path: z.string().describe("Absolute path to the project workspace root or remote workspace URI"),
                 id: z.string().min(1).describe("ID of the dead-end record to reopen"),
                 reason: z.string().min(1).describe("Why this approach is now viable again")
             },

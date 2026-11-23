@@ -122,9 +122,11 @@ export function normalizeGitRemoteUrl(rawUrl) {
             : hostPort.match(/^([^:]+)(?::(\d+))?$/);
         if (!hostPortMatch) return null;
 
+        const scheme = schemeMatch[1].toLowerCase();
+        const defaultPorts = { ssh: "22", http: "80", https: "443" };
         const host = hostPortMatch[1].toLowerCase();
         const port = hostPortMatch[2] || "";
-        const keepPort = port && port !== "22" && port !== "80" && port !== "443" ? port : "";
+        const keepPort = port && port !== defaultPorts[scheme] ? port : "";
 
         const cleanedPath = cleanRepoPath(rawPath).toLowerCase();
         if (!cleanedPath) return null;
@@ -279,9 +281,10 @@ function resolveGitDirs(foundGitPath, gitWorkTreeRoot) {
         }
         if (!commonStat.isDirectory()) return null;
 
+        const gitCommonDir = resolveRealPath(candidateCommonDir);
         return {
-            gitCommonDir: resolveRealPath(candidateCommonDir),
-            isWorktree: true
+            gitCommonDir,
+            isWorktree: gitCommonDir !== resolveRealPath(resolvedGitDir)
         };
     }
 
@@ -365,7 +368,7 @@ export function detectGitIdentity(canonicalPath) {
         }
 
         let repoSubpath = path.relative(realWorkTreeRoot, realCanonicalPath).replace(/\\/g, "/");
-        if (repoSubpath === "." || repoSubpath.startsWith("..")) {
+        if (repoSubpath === "." || repoSubpath === ".." || repoSubpath.startsWith("../")) {
             repoSubpath = "";
         }
         if (process.platform === "win32") {

@@ -315,7 +315,7 @@ export function runSessionStartPayload(payload) {
                     continue;
                 }
 
-                if (secStatus.duplicateCloneCandidate) {
+                if (secStatus.duplicateCloneCandidate && policy?.mode !== "independent") {
                     secondaryNotices.push(formatCloneDisambiguationNotice(secStatus.storeInfo));
                 }
 

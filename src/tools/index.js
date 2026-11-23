@@ -1,7 +1,7 @@
 /**
  * @file src/tools/index.js
  * @description Central MCP tool orchestrator for agent-memory-mcp.
- * Aggregates and registers all 15 project and global MCP tools on the McpServer instance.
+ * Aggregates and registers all 16 project and global MCP tools on the McpServer instance.
  */
 
 import { registerProjectTools } from "./project.js";
@@ -21,7 +21,7 @@ export {
 } from "./common.js";
 
 /**
- * Registers all 15 agent-memory MCP tools on an McpServer instance.
+ * Registers all 16 agent-memory MCP tools on an McpServer instance.
  *
  * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer} server - McpServer instance.
  */

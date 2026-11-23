@@ -80,10 +80,14 @@ function resolveRemoteCandidate(rootCanonical, rootParts, unwrapped) {
     }
 
     if (/^[a-zA-Z]:[\\/]/.test(unwrapped)) {
+        const resolvedTarget =
+            process.platform === "win32"
+                ? realpathSyncSafe(path.win32.resolve(unwrapped))
+                : path.win32.resolve(unwrapped).replace(/\\/g, "/");
         return {
             isRootSelf: false,
             inWorkspaceRel: null,
-            resolvedTarget: realpathSyncSafe(path.win32.resolve(unwrapped)),
+            resolvedTarget,
             resolvedTargetIsRemote: false
         };
     }
@@ -192,6 +196,10 @@ export function normalizeWorkspaceRelativePath(canonicalProjectPath, targetFile,
         return unwrapped.replace(/\\/g, "/").replace(/^\/+/, "");
     }
 
+    if (process.platform !== "win32" && /^[a-zA-Z]:[\\/]/.test(unwrapped)) {
+        return path.win32.resolve(unwrapped).replace(/\\/g, "/");
+    }
+
     let cleanedForward = unwrapped.replace(/\\/g, "/");
     if (cleanedForward.startsWith("./")) {
         cleanedForward = cleanedForward.slice(2);
@@ -245,12 +253,16 @@ function buildLinkedFoldersList(storeInfo, explicitLinkedFolders) {
             const canonical = isWsl ? wslUncToUri(rawRoot) : rawRoot;
             const isRemote = Boolean(item.isRemote) || isRemoteUri(canonical);
             const remoteParts = isRemote ? parseRemoteParts(canonical) : null;
-            const localReal = !isRemote && canonical ? realpathSyncSafe(path.resolve(canonical)) : null;
+            const isWinDrive = !isRemote && process.platform !== "win32" && /^[a-zA-Z]:[\\/]/.test(canonical);
+            const localReal = !isRemote && canonical
+                ? (isWinDrive ? path.win32.resolve(canonical).replace(/\\/g, "/") : realpathSyncSafe(path.resolve(canonical)))
+                : null;
             return {
                 folderSlug: item.folderSlug.trim(),
                 canonicalPath: canonical,
                 normalizedKey: item.normalizedKey || normalizeForIndexCompare(canonical, isRemote),
                 isRemote,
+                isWinDrive,
                 remoteParts,
                 localReal
             };
@@ -262,6 +274,7 @@ function findDeepestLinkedMatch(resolvedTarget, targetIsRemote, linkedEntries) {
     let bestDepth = -1;
 
     const targetParts = targetIsRemote ? parseRemoteParts(resolvedTarget) : null;
+    const targetIsWinDrive = !targetIsRemote && process.platform !== "win32" && /^[a-zA-Z]:[\\/]/.test(resolvedTarget);
 
     for (const folder of linkedEntries) {
         if (folder.isRemote !== targetIsRemote) continue;
@@ -278,7 +291,10 @@ function findDeepestLinkedMatch(resolvedTarget, targetIsRemote, linkedEntries) {
             }
         } else {
             if (!folder.localReal) continue;
-            const rel = path.relative(folder.localReal, resolvedTarget).replace(/\\/g, "/");
+            if (process.platform !== "win32" && Boolean(folder.isWinDrive) !== targetIsWinDrive) continue;
+            const rel = targetIsWinDrive
+                ? path.win32.relative(folder.localReal, resolvedTarget).replace(/\\/g, "/")
+                : path.relative(folder.localReal, resolvedTarget).replace(/\\/g, "/");
             if (!rel || rel === "." || isOutsideRelative(rel, false)) continue;
             const depth = folder.localReal.length;
             if (depth > bestDepth) {
@@ -442,6 +458,9 @@ export function classifyWorkspaceFiles(storeInfo, files, options = {}) {
             const targetParts = parseRemoteParts(unwrapped);
             resolvedTarget = targetParts ? `${targetParts.prefix}${targetParts.posixPath}` : unwrapped;
             resolvedTargetIsRemote = true;
+        } else if (process.platform !== "win32" && /^[a-zA-Z]:[\\/]/.test(unwrapped)) {
+            resolvedTarget = path.win32.resolve(unwrapped).replace(/\\/g, "/");
+            resolvedTargetIsRemote = false;
         } else {
             const cleanedForward = unwrapped.replace(/\\/g, "/").replace(/^\.\//, "");
             const candidateAbs = path.isAbsolute(unwrapped)

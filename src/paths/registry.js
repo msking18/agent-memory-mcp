@@ -299,8 +299,13 @@ export function updateProjectsIndex(mutatorFn) {
 
         tempWriteCounter = (tempWriteCounter + 1) % 1000000;
         const tmpPath = `${indexPath}.tmp.${process.pid}.${Date.now()}.${tempWriteCounter}`;
-        fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2), "utf8");
-        renameWithRetry(tmpPath, indexPath);
+        try {
+            fs.writeFileSync(tmpPath, JSON.stringify(current, null, 2), "utf8");
+            renameWithRetry(tmpPath, indexPath);
+        } catch (err) {
+            tryUnlink(tmpPath);
+            throw err;
+        }
 
         return result;
     } finally {
@@ -339,7 +344,7 @@ function findConflictingGitOwner(projects, gitIdentity, selfStoreKey) {
     if (!gitIdentity) return null;
     for (const entry of Object.values(projects)) {
         if (!entry || entry.storeKey === selfStoreKey) continue;
-        if (entry.isolatedGitIdentity) continue;
+        if (entry.isolatedGitIdentity && entry.isolatedGitIdentity === gitIdentity) continue;
         const ownsDirect = entry.gitIdentity === gitIdentity;
         const ownsAlias = Array.isArray(entry.gitIdentityAliases) && entry.gitIdentityAliases.includes(gitIdentity);
         if (ownsDirect || ownsAlias) {
@@ -522,8 +527,8 @@ export function getProjectStoreInfo(rawPath, options = {}) {
             const entryNormCommon = entry.gitCommonDir ? normalizeForIndexCompare(entry.gitCommonDir, false) : null;
             const sameCommonDir = Boolean(normGitCommonDir && entryNormCommon && normGitCommonDir === entryNormCommon);
 
-            if (entry.isolatedGitIdentity) {
-                if (sameCommonDir && entry.isolatedGitIdentity === gitIdentity) {
+            if (entry.isolatedGitIdentity && entry.isolatedGitIdentity === gitIdentity) {
+                if (sameCommonDir) {
                     gitMatches.push({ entry, sameCommonDir: true });
                 }
                 continue;
@@ -537,19 +542,16 @@ export function getProjectStoreInfo(rawPath, options = {}) {
         }
 
         if (gitMatches.length > 0) {
-            const autoShareMatch = gitMatches.find(({ entry, sameCommonDir }) => {
-                if (
-                    parsed.isRemote ||
-                    entry.isRemote ||
-                    isRemoteUri(entry.canonicalPath) ||
-                    isWslUncPath(entry.canonicalPath)
-                ) {
-                    return true;
-                }
-                if (sameCommonDir) return true;
-                if (isEntryMissingFromDisk(entry.canonicalPath, entry.isRemote)) return true;
-                return false;
-            });
+            const autoShareMatch =
+                gitMatches.find(({ sameCommonDir }) => sameCommonDir) ||
+                gitMatches.find(
+                    ({ entry }) =>
+                        parsed.isRemote ||
+                        entry.isRemote ||
+                        isRemoteUri(entry.canonicalPath) ||
+                        isWslUncPath(entry.canonicalPath) ||
+                        isEntryMissingFromDisk(entry.canonicalPath, entry.isRemote)
+                );
 
             if (autoShareMatch) {
                 const matched = autoShareMatch.entry;
@@ -724,6 +726,10 @@ function applyGitIdentityUpgradeToEntry(entry, newGitIdentity, allProjects, self
     const conflict = findConflictingGitOwner(allProjects, newGitIdentity, selfStoreKey);
     if (conflict) {
         return conflict;
+    }
+
+    if (entry.isolatedGitIdentity && entry.isolatedGitIdentity !== newGitIdentity) {
+        entry.isolatedGitIdentity = null;
     }
 
     const existingId = entry.gitIdentity || null;
@@ -1046,29 +1052,59 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
         if (isolate) {
             const existingSelf = findEntryByPathInIndex(index.projects, callerKeys);
             const pathHash = sha256Hex12(targetParsed.normalizedForHash);
-            const storeKey = existingSelf ? existingSelf.storeKey : `${targetParsed.slug}-${pathHash}`;
-            const isolatedId = desiredGitIdentity || existingSelf?.isolatedGitIdentity || null;
+            const canonicalMatchesCaller = Boolean(
+                existingSelf?.canonicalPath &&
+                setsIntersect(buildLookupKeys(existingSelf.canonicalPath, existingSelf.isRemote), callerKeys)
+            );
+            const splitFromLiveExisting = Boolean(
+                existingSelf &&
+                !canonicalMatchesCaller &&
+                existingSelf.canonicalPath &&
+                !isEntryMissingFromDisk(existingSelf.canonicalPath, existingSelf.isRemote)
+            );
+
+            let storeKey;
+            let reuseExisting = existingSelf;
+            if (splitFromLiveExisting) {
+                reuseExisting = null;
+                storeKey = `${targetParsed.slug}-${pathHash}`;
+                if (
+                    storeKey === existingSelf.storeKey ||
+                    (index.projects[storeKey] &&
+                        !setsIntersect(
+                            buildLookupKeys(index.projects[storeKey].canonicalPath, index.projects[storeKey].isRemote),
+                            callerKeys
+                        ))
+                ) {
+                    storeKey = `${targetParsed.slug}-${sha256Hex12(`isolated:${targetParsed.normalizedForHash}`)}`;
+                }
+            } else {
+                storeKey = existingSelf ? existingSelf.storeKey : `${targetParsed.slug}-${pathHash}`;
+            }
+
+            const existingTargetEntry = reuseExisting || index.projects[storeKey] || null;
+            const isolatedId = desiredGitIdentity || existingTargetEntry?.isolatedGitIdentity || null;
 
             const entry = {
                 storeKey,
-                canonicalPath: existingSelf?.canonicalPath || targetParsed.canonicalPath,
+                canonicalPath: reuseExisting?.canonicalPath || targetParsed.canonicalPath,
                 aliases: dedupeAliases(
                     [
-                        ...(existingSelf?.aliases || []),
+                        ...(reuseExisting?.aliases || []),
                         targetParsed.normalizedForHash
                     ],
-                    existingSelf?.canonicalPath || targetParsed.canonicalPath,
-                    existingSelf ? Boolean(existingSelf.isRemote) && targetParsed.isRemote : targetParsed.isRemote
+                    reuseExisting?.canonicalPath || targetParsed.canonicalPath,
+                    reuseExisting ? Boolean(reuseExisting.isRemote) && targetParsed.isRemote : targetParsed.isRemote
                 ),
                 gitIdentity: null,
                 gitIdentityAliases: [],
                 gitCommonDir: detectedGit?.gitCommonDir
                     ? normalizeForIndexCompare(detectedGit.gitCommonDir, false)
-                    : existingSelf?.gitCommonDir || null,
+                    : existingTargetEntry?.gitCommonDir || null,
                 isolatedGitIdentity: isolatedId,
-                isRemote: existingSelf ? Boolean(existingSelf.isRemote) && targetParsed.isRemote : targetParsed.isRemote,
+                isRemote: reuseExisting ? Boolean(reuseExisting.isRemote) && targetParsed.isRemote : targetParsed.isRemote,
                 dbFile: `${storeKey}.db`,
-                firstSeenAt: existingSelf?.firstSeenAt || now,
+                firstSeenAt: existingTargetEntry?.firstSeenAt || now,
                 lastAccessedAt: now
             };
             index.projects[storeKey] = entry;
@@ -1094,7 +1130,7 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
         } else if (remoteSpec.gitIdentity) {
             for (const entry of Object.values(index.projects)) {
                 if (!entry) continue;
-                if (entry.isolatedGitIdentity) continue;
+                if (entry.isolatedGitIdentity && entry.isolatedGitIdentity === remoteSpec.gitIdentity) continue;
                 if (
                     entry.gitIdentity === remoteSpec.gitIdentity ||
                     (Array.isArray(entry.gitIdentityAliases) && entry.gitIdentityAliases.includes(remoteSpec.gitIdentity))

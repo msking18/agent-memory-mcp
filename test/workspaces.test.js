@@ -83,6 +83,10 @@ describe("Zero-Process Git, Worktree, Bare-Repo & Root-Commit Identity", () => {
         assert.equal(normalizeGitRemoteUrl("ssh://git@github.com:22/owner/repo.git"), "github.com/owner/repo");
         assert.equal(normalizeGitRemoteUrl("http://github.com:80/Owner/Repo.git"), "github.com/owner/repo");
         assert.equal(normalizeGitRemoteUrl("git://github.com/Owner/Repo.git"), "github.com/owner/repo");
+        assert.equal(normalizeGitRemoteUrl("ssh://git@github.com:443/owner/repo.git"), "github.com:443/owner/repo");
+        assert.equal(normalizeGitRemoteUrl("https://github.com:22/owner/repo.git"), "github.com:22/owner/repo");
+        assert.equal(normalizeGitRemoteUrl("http://github.com:443/owner/repo.git"), "github.com:443/owner/repo");
+        assert.equal(normalizeGitRemoteUrl("git://github.com:22/owner/repo.git"), "github.com:22/owner/repo");
 
         assert.equal(
             normalizeGitRemoteUrl("ssh://git@git.corp.local:2222/team/app.git"),
@@ -247,6 +251,36 @@ describe("Zero-Process Git, Worktree, Bare-Repo & Root-Commit Identity", () => {
         const bigConfig = "[core]\n\tbare = false\n" + "#".repeat(300 * 1024);
         fs.writeFileSync(path.join(oversizedRepo, ".git", "config"), bigConfig, "utf8");
         assert.equal(detectGitIdentity(oversizedRepo), null);
+    });
+
+    it("1.6 Preserves '..cache' repoSubpath and returns isWorktree:false when commondir resolves to gitdir", () => {
+        const repo = path.join(tempRoot, "dotdot-repo");
+        const dotdotCache = path.join(repo, "..cache");
+        fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+        fs.mkdirSync(dotdotCache, { recursive: true });
+        fs.writeFileSync(
+            path.join(repo, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/Org/Mono.git\n',
+            "utf8"
+        );
+
+        const subId = detectGitIdentity(dotdotCache);
+        assert.ok(subId);
+        assert.equal(subId.repoSubpath, "..cache");
+        assert.equal(subId.gitIdentity, "github.com/org/mono#..cache");
+
+        const sepWorkTree = path.join(tempRoot, "sep-worktree");
+        const sepGitDir = path.join(tempRoot, "sep-gitdir");
+        fs.mkdirSync(sepWorkTree, { recursive: true });
+        fs.mkdirSync(sepGitDir, { recursive: true });
+        fs.writeFileSync(path.join(sepGitDir, "config"), '[remote "origin"]\n\turl = https://github.com/Org/Sep.git\n', "utf8");
+        fs.writeFileSync(path.join(sepGitDir, "commondir"), ".\n", "utf8");
+        fs.writeFileSync(path.join(sepWorkTree, ".git"), `gitdir: ${sepGitDir}\n`, "utf8");
+
+        const sepId = detectGitIdentity(sepWorkTree);
+        assert.ok(sepId);
+        assert.equal(sepId.gitIdentity, "github.com/org/sep");
+        assert.equal(sepId.isWorktree, false);
     });
 });
 
@@ -432,6 +466,12 @@ describe("Remote URI Parsing, Validation, & Bidirectional WSL Aliasing", () => {
         assert.equal(parsedLocal.slug, "existing-app");
         assert.equal(validateProjectPath(realDir), parsedLocal.canonicalPath);
         assert.equal(validateProjectPath(pathToFileURL(realDir).href), parsedLocal.canonicalPath);
+        const upperFileUri = pathToFileURL(realDir).href.replace(/^file:/, "FILE:");
+        assert.equal(validateProjectPath(upperFileUri), parsedLocal.canonicalPath);
+        assert.equal(
+            normalizeForIndexCompare(upperFileUri, false),
+            normalizeForIndexCompare(parsedLocal.canonicalPath, false)
+        );
 
         const filePath = path.join(tempRoot, "not-a-dir.txt");
         fs.writeFileSync(filePath, "hello", "utf8");
@@ -1092,6 +1132,113 @@ describe("Locked projects_index.json v4 Registry, 4-Step Resolution, Upgrade Lif
         assert.equal(regB.gitIdentityConflict, undefined);
         assert.equal(readProjectsIndex().projects[infoB.storeKey].gitIdentity, "github.com/org/old-name");
     });
+
+    it("3.11 Prefers sameCommonDir over missing clones, splits aliased live checkouts on isolate:true, clears isolatedGitIdentity on new remote, and cleans tmpPath on write error", (t) => {
+        // 1) Step 3 prefers sameCommonDir ahead of isEntryMissingFromDisk
+        const deletedClone = path.join(tempRoot, "deleted-clone");
+        const liveRepo = path.join(tempRoot, "live-repo");
+        const liveWt = path.join(tempRoot, "live-wt");
+        const liveWtMeta = path.join(liveRepo, ".git", "worktrees", "wt-1");
+        fs.mkdirSync(path.join(deletedClone, ".git"), { recursive: true });
+        fs.mkdirSync(liveWtMeta, { recursive: true });
+        fs.mkdirSync(liveWt, { recursive: true });
+        const sharedCfg = '[remote "origin"]\n\turl = https://github.com/org/step3-order.git\n';
+        fs.writeFileSync(path.join(deletedClone, ".git", "config"), sharedCfg, "utf8");
+        fs.writeFileSync(path.join(liveRepo, ".git", "config"), sharedCfg, "utf8");
+        fs.writeFileSync(path.join(liveWtMeta, "commondir"), "../..\n", "utf8");
+        fs.writeFileSync(path.join(liveWt, ".git"), `gitdir: ${liveWtMeta}\n`, "utf8");
+
+        const delInfo = getProjectStoreInfo(deletedClone);
+        registerProjectInIndex(delInfo);
+        fs.rmSync(deletedClone, { recursive: true, force: true });
+
+        // Force a second live entry owning the same gitIdentity after deletedClone
+        const liveInfo = getProjectStoreInfo(liveRepo);
+        const liveStoreKey = `live-repo-${crypto.createHash("sha256").update("live-repo").digest("hex").slice(0, 12)}`;
+        updateProjectsIndex((idx) => {
+            idx.projects[liveStoreKey] = {
+                storeKey: liveStoreKey,
+                canonicalPath: liveInfo.canonicalPath,
+                aliases: [],
+                gitIdentity: "github.com/org/step3-order",
+                gitIdentityAliases: [],
+                gitCommonDir: liveInfo.gitCommonDir.replace(/\\/g, "/"),
+                isolatedGitIdentity: null,
+                isRemote: false,
+                dbFile: `${liveStoreKey}.db`,
+                firstSeenAt: new Date().toISOString(),
+                lastAccessedAt: new Date().toISOString()
+            };
+        });
+
+        const wtInfo = getProjectStoreInfo(liveWt);
+        assert.equal(wtInfo.storeKey, liveStoreKey);
+        assert.equal(wtInfo.resolvedVia, "git_identity");
+
+        // 2) isolate:true on an alias whose canonicalPath is a live checkout detaches into its own storeKey without wiping owner's gitIdentity
+        const checkoutA = path.join(tempRoot, "checkout-a");
+        const checkoutB = path.join(tempRoot, "checkout-b");
+        for (const d of [checkoutA, checkoutB]) {
+            fs.mkdirSync(path.join(d, ".git"), { recursive: true });
+            fs.writeFileSync(
+                path.join(d, ".git", "config"),
+                '[remote "origin"]\n\turl = https://github.com/org/split-alias.git\n',
+                "utf8"
+            );
+        }
+        const infoA = getProjectStoreInfo(checkoutA);
+        registerProjectInIndex(infoA);
+        linkProjectIdentity({ projectPath: checkoutB, targetStoreKey: infoA.storeKey });
+        assert.ok(readProjectsIndex().projects[infoA.storeKey].aliases.includes(getProjectStoreInfo(checkoutB).normalizedForHash));
+
+        const splitIso = linkProjectIdentity({ projectPath: checkoutB, isolate: true });
+        assert.notEqual(splitIso.storeKey, infoA.storeKey);
+        const idxAfterSplit = readProjectsIndex();
+        assert.equal(idxAfterSplit.projects[infoA.storeKey].gitIdentity, "github.com/org/split-alias");
+        assert.equal(idxAfterSplit.projects[infoA.storeKey].isolatedGitIdentity, null);
+        assert.equal(idxAfterSplit.projects[infoA.storeKey].aliases.includes(getProjectStoreInfo(checkoutB).normalizedForHash), false);
+        assert.equal(idxAfterSplit.projects[splitIso.storeKey].isolatedGitIdentity, "github.com/org/split-alias");
+        assert.equal(getProjectStoreInfo(checkoutB).storeKey, splitIso.storeKey);
+
+        // 3) Isolated store acquiring a new distinct gitIdentity clears isolatedGitIdentity so conflicts/sharing work again
+        fs.writeFileSync(
+            path.join(checkoutB, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/new-fork.git\n',
+            "utf8"
+        );
+        const forkInfo = getProjectStoreInfo(checkoutB);
+        registerProjectInIndex(forkInfo);
+        const forkEntry = readProjectsIndex().projects[splitIso.storeKey];
+        assert.equal(forkEntry.gitIdentity, "github.com/org/new-fork");
+        assert.equal(forkEntry.isolatedGitIdentity, null);
+
+        const conflictingClone = path.join(tempRoot, "fork-clone-conflict");
+        fs.mkdirSync(path.join(conflictingClone, ".git"), { recursive: true });
+        fs.writeFileSync(
+            path.join(conflictingClone, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/new-fork.git\n',
+            "utf8"
+        );
+        const forkDupInfo = getProjectStoreInfo(conflictingClone);
+        assert.ok(forkDupInfo.duplicateCloneCandidate);
+        assert.equal(forkDupInfo.duplicateCloneCandidate.existingStoreKey, splitIso.storeKey);
+
+        // 4) updateProjectsIndex cleans up tmpPath when writeFileSync fails
+        const storesDir = getStoresDir();
+        const writeMock = t.mock.method(fs, "writeFileSync", (filePath, ...rest) => {
+            if (typeof filePath === "string" && filePath.includes(".tmp.")) {
+                fs.closeSync(fs.openSync(filePath, "w"));
+                throw new Error("disk full");
+            }
+            return fs.writeFileSync.wrappedMethod
+                ? fs.writeFileSync.wrappedMethod.call(fs, filePath, ...rest)
+                : undefined;
+        });
+        assert.throws(() => updateProjectsIndex(() => {}), /disk full/);
+        writeMock.mock.restore();
+        const leftoverTmps = fs.readdirSync(storesDir).filter((f) => f.includes(".tmp."));
+        assert.deepEqual(leftoverTmps, []);
+    });
 });
 
 describe("Workspace File Classification, Symlink/file:// Resolution, & Remote/Linked Normalization", () => {
@@ -1324,6 +1471,37 @@ describe("Workspace File Classification, Symlink/file:// Resolution, & Remote/Li
             assert.deepEqual(winRes.inWorkspace, ["node_modules/@types/node/index.d.ts"]);
             assert.equal(winRes.externalFiles.length, 1);
             assert.equal(winRes.externalFiles[0].input, "D:\\Other\\file.ts");
+        }
+    });
+
+    it("4.6 Classifies Windows drive-letter paths without cwd/root mangling across platforms", () => {
+        const localRoot = path.join(tempRoot, "posix-or-local");
+        fs.mkdirSync(localRoot, { recursive: true });
+        const localStore = getProjectStoreInfo(localRoot);
+        const remoteStore = getProjectStoreInfo("ssh://dev/workspaces/app");
+
+        updateProjectsIndex((idx) => {
+            idx.projects["win-other-001122334455"] = {
+                storeKey: "win-other-001122334455",
+                canonicalPath: "D:\\Other",
+                aliases: [],
+                isRemote: false,
+                dbFile: "win-other-001122334455.db",
+                firstSeenAt: new Date().toISOString(),
+                lastAccessedAt: new Date().toISOString()
+            };
+        });
+
+        for (const store of [localStore, remoteStore]) {
+            const res = classifyWorkspaceFiles(store, ["D:\\Other\\..\\Other\\file.ts"]);
+            assert.equal(res.externalFiles.length, 1);
+            assert.equal(res.externalFiles[0].resolvedPath.includes(process.cwd()), false);
+            assert.equal(res.externalFiles[0].resolvedPath.includes(localStore.canonicalPath), false);
+            assert.ok(res.externalFiles[0].ownerCandidate);
+            assert.equal(res.externalFiles[0].ownerCandidate.storeKey, "win-other-001122334455");
+            if (process.platform !== "win32") {
+                assert.equal(res.externalFiles[0].resolvedPath, "D:/Other/file.ts");
+            }
         }
     });
 });
@@ -1756,6 +1934,88 @@ describe("Store Guardrails, Remote-Safe Prep/Staleness, & configureWorkspace Con
         assert.equal(configureWorkspace({ action: "inspect" }).isError, true);
         assert.equal(configureWorkspace({ action: "link_project_identity", project_path: storeOne }).isError, true);
     });
+
+    it("5.6 Skips remote URIs and traversal '@slug/' anchors in staleness checks, reads index once in resolveStoreLinkedFolders, and requires strict isolate === true", (t) => {
+        const projA = path.join(tempRoot, "guard-stale-a");
+        const toolB = path.join(tempRoot, "guard-stale-b");
+        fs.mkdirSync(path.join(projA, "src"), { recursive: true });
+        fs.mkdirSync(path.join(toolB, "src"), { recursive: true });
+        fs.writeFileSync(path.join(toolB, "src", "ok.ts"), "export const ok = 1;\n", "utf8");
+
+        configureWorkspace({
+            action: "set_folder_policy",
+            primary_path: projA,
+            folder_path: toolB,
+            mode: "linked",
+            folder_slug: "tool-b"
+        });
+
+        const savedRemoteRef = saveProjectMemory(projA, {
+            title: "Bridge With Remote Ref",
+            summary: "Allowed remote URI + WSL UNC in local workspace.",
+            files: ["ssh://dev/home/app/src/index.ts", "\\\\wsl.localhost\\Ubuntu\\home\\dev\\file.ts"],
+            allow_external_files: true
+        });
+        assert.equal(savedRemoteRef.isError, false);
+
+        const readRemoteRef = readMemoryNode(projA, { id: savedRemoteRef.results[0].id });
+        assert.equal(readRemoteRef.isError, false);
+        assert.deepEqual(readRemoteRef.nodes[0].missingFiles, []);
+        assert.deepEqual(readRemoteRef.nodes[0].staleFiles, []);
+        assert.equal(readRemoteRef.text.includes("[STALE WARNING]"), false);
+
+        // Direct checkEntryFileStaleness: remote URIs, WSL UNC, and traversal @<slug>/ paths are skipped cleanly
+        const outsideSecret = path.join(tempRoot, "outside-secret.txt");
+        fs.writeFileSync(outsideSecret, "secret", "utf8");
+        const futureTime = new Date(Date.now() + 60000);
+        fs.utimesSync(outsideSecret, futureTime, futureTime);
+
+        const infoA = getProjectStoreInfo(projA);
+        const infoB = getProjectStoreInfo(toolB);
+        const linkedMap = new Map([["tool-b", { folderSlug: "tool-b", canonicalPath: infoB.canonicalPath, isRemote: false }]]);
+        const stalenessRes = checkEntryFileStaleness(
+            infoA.canonicalPath,
+            [
+                "ssh://dev/home/app/src/index.ts",
+                "\\\\wsl.localhost\\Ubuntu\\home\\dev\\file.ts",
+                "@tool-b/../../etc/passwd",
+                "@tool-b/../outside-secret.txt",
+                "@tool-b/sub/../../etc/passwd",
+                "@tool-b//etc/passwd",
+                "@tool-b/C:/Windows/win.ini",
+                "@tool-b/src/ok.ts"
+            ],
+            new Date(Date.now() + 1000).toISOString(),
+            { linkedFoldersBySlug: linkedMap }
+        );
+        assert.deepEqual(stalenessRes.missingFiles, []);
+        assert.deepEqual(stalenessRes.staleFiles, []);
+
+        // resolveStoreLinkedFolders reads projects_index.json once even with multiple aliases
+        updateProjectsIndex((idx) => {
+            idx.projects[infoA.storeKey].aliases.push("/tmp/alias-1", "/tmp/alias-2", "/tmp/alias-3");
+        });
+        const indexPath = getProjectsIndexPath();
+        let indexReadCount = 0;
+        const origReadFileSync = fs.readFileSync;
+        const readSpy = t.mock.method(fs, "readFileSync", (target, ...args) => {
+            if (target === indexPath) indexReadCount++;
+            return origReadFileSync.call(fs, target, ...args);
+        });
+        const linked = resolveStoreLinkedFolders(infoA);
+        readSpy.mock.restore();
+        assert.equal(linked.length, 1);
+        assert.equal(indexReadCount, 1);
+
+        // Non-boolean truthy isolate ("false") must NOT trigger isolate: true
+        const nonBoolIso = configureWorkspace({
+            action: "link_project_identity",
+            project_path: projA,
+            isolate: "false"
+        });
+        assert.equal(nonBoolIso.isError, true);
+        assert.match(nonBoolIso.text, /requires isolate: true/i);
+    });
 });
 
 describe("Multi-Folder & Remote-Aware SessionStart Hook", () => {
@@ -2052,6 +2312,37 @@ describe("Multi-Folder & Remote-Aware SessionStart Hook", () => {
 
         const secondaryHeaderMatches = msg.match(/=== Secondary Workspace /g) || [];
         assert.equal(secondaryHeaderMatches.length, 4, "must cap secondary hydration at exactly 4");
+    });
+
+    it("6.6 Emits clone disambiguation banner only once for uninitialized independent secondary clone", () => {
+        const primary = path.join(tempRoot, "ind-dup-primary");
+        const clone1 = path.join(tempRoot, "ind-dup-clone1");
+        const clone2 = path.join(tempRoot, "ind-dup-clone2");
+        fs.mkdirSync(primary, { recursive: true });
+        for (const dir of [clone1, clone2]) {
+            fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
+            fs.writeFileSync(
+                path.join(dir, ".git", "config"),
+                '[remote "origin"]\n\turl = https://github.com/org/ind-dup-repo.git\n',
+                "utf8"
+            );
+        }
+
+        saveProjectMemory(primary, { title: "Primary App", summary: "Primary body." });
+        saveProjectMemory(clone1, { title: "Clone 1 App", summary: "Clone 1 body." });
+        configureWorkspace({
+            action: "set_folder_policy",
+            primary_path: primary,
+            folder_path: clone2,
+            mode: "independent"
+        });
+        closeAllDatabases();
+
+        const res = runSessionStartPayload({ workspacePaths: [primary, clone2] });
+        const msg = res?.injectSteps?.[0]?.systemMessage?.systemMessage || "";
+        const bannerMatches = msg.match(/\[AGENT-MEMORY CLONE DISAMBIGUATION REQUIRED\]/g) || [];
+        assert.equal(bannerMatches.length, 1);
+        assert.match(msg, /Secondary Workspace .* \(independent\)/);
     });
 });
 

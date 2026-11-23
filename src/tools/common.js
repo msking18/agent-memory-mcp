@@ -43,7 +43,7 @@ export const BatchEntrySchema = z.object({
         .array(z.string())
         .optional()
         .default([])
-        .describe("Optional workspace-relative file paths anchored to this memory")
+        .describe("Optional workspace-relative file paths or '@<folderSlug>/' linked-folder anchors anchored to this memory")
 });
 
 /**

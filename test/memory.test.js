@@ -330,7 +330,7 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         );
     });
 
-    it("7. Verifies full MCP Stdio JSON-RPC protocol: 15 tools, readOnlyHint annotations, calls & resources", async () => {
+    it("7. Verifies full MCP Stdio JSON-RPC protocol: 16 tools, readOnlyHint annotations, calls & resources", async () => {
         closeAllDatabases();
         const transport = new StdioClientTransport({
             command: process.execPath,
@@ -343,7 +343,8 @@ describe("agent-memory-mcp v3.0 Comprehensive Test Suite", () => {
         await client.connect(transport);
         try {
             const { tools } = await client.listTools();
-            assert.equal(tools.length, 15);
+            assert.equal(tools.length, 16);
+            assert.ok(tools.some((t) => t.name === "configure_workspace"));
 
             const statusTool = tools.find((t) => t.name === "check_memory_status");
             assert.equal(statusTool?.annotations?.readOnlyHint, true);

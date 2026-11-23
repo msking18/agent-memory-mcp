@@ -19,7 +19,7 @@
   },
   "scripts": {
     "start": "node --no-warnings index.js",
-    "test": "node --no-warnings --test test/memory.test.js test/workspaces.test.js"
+    "test": "node --no-warnings --test test/core/project-memory.test.js test/core/mcp-global-budget.test.js test/workspaces/git-identity.test.js test/workspaces/remote-uris.test.js test/workspaces/registry-core.test.js test/workspaces/registry-linking.test.js test/workspaces/file-classification.test.js test/workspaces/store-guardrails.test.js test/workspaces/store-clones-and-reads.test.js test/workspaces/session-start-hook.test.js test/workspaces/mcp-e2e-policies.test.js test/workspaces/mcp-e2e-remotes.test.js"
   },
   "repository": {
     "type": "git",

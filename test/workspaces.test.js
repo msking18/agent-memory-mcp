@@ -823,4 +823,178 @@ describe("Locked projects_index.json v4 Registry, 4-Step Resolution, Upgrade Lif
         assert.equal(Object.keys(inspected.workspacePolicies).length, 3);
         assert.equal(inspected.workspaceFolders.length, 4);
     });
+
+    it("3.8 linkProjectIdentity promotes missing canonicalPath on source_project_path and retires old self entry on relink", () => {
+        // Part A: deleted source_project_path promotes live projectPath to canonicalPath immediately
+        const oldClone = path.join(tempRoot, "old-clone-relink");
+        const newClone = path.join(tempRoot, "new-clone-relink");
+        const secondClone = path.join(tempRoot, "second-clone-relink");
+        for (const dir of [oldClone, newClone, secondClone]) {
+            fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
+            fs.writeFileSync(
+                path.join(dir, ".git", "config"),
+                '[remote "origin"]\n\turl = https://github.com/org/relink-app.git\n',
+                "utf8"
+            );
+        }
+
+        const oldInfo = getProjectStoreInfo(oldClone);
+        registerProjectInIndex(oldInfo);
+        fs.rmSync(oldClone, { recursive: true, force: true });
+
+        linkProjectIdentity({ projectPath: newClone, sourceProjectPath: oldClone });
+        const afterRelink = readProjectsIndex().projects[oldInfo.storeKey];
+        assert.equal(afterRelink.canonicalPath, validateProjectPath(newClone));
+        assert.ok(afterRelink.aliases.includes(oldInfo.normalizedForHash));
+
+        // Subsequent live clone must see duplicateCloneCandidate because newClone is live on disk
+        const secondInfo = getProjectStoreInfo(secondClone);
+        assert.notEqual(secondInfo.storeKey, oldInfo.storeKey);
+        assert.ok(secondInfo.duplicateCloneCandidate);
+        assert.equal(secondInfo.duplicateCloneCandidate.existingStoreKey, oldInfo.storeKey);
+        assert.equal(secondInfo.duplicateCloneCandidate.existingPath, validateProjectPath(newClone));
+
+        // Part B: relinking an already-indexed entry E2 (registered before target) clears/retires E2
+        const relinkDir = path.join(tempRoot, "already-indexed-e2");
+        const targetDir = path.join(tempRoot, "target-store-s");
+        const siblingAliasDir = path.join(tempRoot, "sibling-alias-e3");
+        fs.mkdirSync(relinkDir, { recursive: true });
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.mkdirSync(siblingAliasDir, { recursive: true });
+
+        const e2Info = getProjectStoreInfo(relinkDir);
+        registerProjectInIndex(e2Info);
+        // Add a WSL-equivalent alias onto a third entry E3 and an extra alias onto E2 in a sub-case
+        const sTargetInfo = getProjectStoreInfo(targetDir);
+        registerProjectInIndex(sTargetInfo);
+
+        const wslEntryInfo = getProjectStoreInfo("wsl://ubuntu/home/dev/wsl-relink-other");
+        registerProjectInIndex(wslEntryInfo);
+        updateProjectsIndex((idx) => {
+            idx.projects[wslEntryInfo.storeKey].aliases.push("\\\\wsl.localhost\\Ubuntu\\home\\dev\\wsl-relink");
+        });
+
+        linkProjectIdentity({ projectPath: relinkDir, targetStoreKey: sTargetInfo.storeKey });
+        const idxAfterB = readProjectsIndex();
+        assert.equal(idxAfterB.projects[e2Info.storeKey], undefined);
+        assert.equal(getProjectStoreInfo(relinkDir).storeKey, sTargetInfo.storeKey);
+
+        // Relinking WSL UNC path cleans up WSL-equivalent alias on wslEntryInfo
+        linkProjectIdentity({
+            projectPath: "\\\\wsl.localhost\\Ubuntu\\home\\dev\\wsl-relink",
+            targetStoreKey: sTargetInfo.storeKey
+        });
+        const wslAfter = readProjectsIndex().projects[wslEntryInfo.storeKey];
+        assert.equal(wslAfter.aliases.length, 0);
+        assert.equal(
+            getProjectStoreInfo("wsl://ubuntu/home/dev/wsl-relink").storeKey,
+            sTargetInfo.storeKey
+        );
+
+        // Extra check: if E2 also had another alias (siblingAliasDir), E2 retires relinkDir and promotes siblingAliasDir
+        const e2MultiInfo = getProjectStoreInfo(relinkDir);
+        assert.equal(e2MultiInfo.storeKey, sTargetInfo.storeKey);
+        const multiDir = path.join(tempRoot, "multi-canonical");
+        fs.mkdirSync(multiDir, { recursive: true });
+        const multiInfo = getProjectStoreInfo(multiDir);
+        registerProjectInIndex(multiInfo);
+        updateProjectsIndex((idx) => {
+            idx.projects[multiInfo.storeKey].aliases.push(getProjectStoreInfo(siblingAliasDir).normalizedForHash);
+        });
+        linkProjectIdentity({ projectPath: multiDir, targetStoreKey: sTargetInfo.storeKey });
+        const multiAfter = readProjectsIndex().projects[multiInfo.storeKey];
+        assert.ok(multiAfter);
+        assert.equal(multiAfter.canonicalPath, getProjectStoreInfo(siblingAliasDir).normalizedForHash);
+        assert.equal(getProjectStoreInfo(multiDir).storeKey, sTargetInfo.storeKey);
+    });
+
+    it("3.9 Step 4 new_git_identity and registered_remote avoid colliding with isolated <slug>-<gitHash> store", () => {
+        const origClone = path.join(tempRoot, "first", "my-app");
+        const secondClone = path.join(tempRoot, "second", "my-app");
+        fs.mkdirSync(path.join(origClone, ".git"), { recursive: true });
+        fs.mkdirSync(path.join(secondClone, ".git"), { recursive: true });
+        const remoteCfg = '[remote "origin"]\n\turl = https://github.com/org/isolated-seed.git\n';
+        fs.writeFileSync(path.join(origClone, ".git", "config"), remoteCfg, "utf8");
+        fs.writeFileSync(path.join(secondClone, ".git", "config"), remoteCfg, "utf8");
+
+        const origInfo = getProjectStoreInfo(origClone);
+        assert.equal(origInfo.resolvedVia, "new_git_identity");
+        registerProjectInIndex(origInfo);
+        fs.writeFileSync(origInfo.dbPath, "", "utf8");
+
+        const isoOrig = linkProjectIdentity({ projectPath: origClone, isolate: true });
+        assert.equal(isoOrig.storeKey, origInfo.storeKey);
+        assert.equal(isoOrig.isolatedGitIdentity, "github.com/org/isolated-seed");
+
+        // registered_remote with same slug + same remote must NOT overwrite isolated origInfo.storeKey
+        const remoteRes = linkProjectIdentity({
+            projectPath: "ssh://dev.host/srv/my-app",
+            gitRemote: "https://github.com/org/isolated-seed.git"
+        });
+        assert.notEqual(remoteRes.storeKey, origInfo.storeKey);
+        assert.equal(remoteRes.gitIdentity, "github.com/org/isolated-seed");
+
+        const idxAfterRemote = readProjectsIndex();
+        assert.equal(idxAfterRemote.projects[origInfo.storeKey].isolatedGitIdentity, "github.com/org/isolated-seed");
+        assert.equal(idxAfterRemote.projects[origInfo.storeKey].gitIdentity, null);
+        assert.equal(idxAfterRemote.projects[remoteRes.storeKey].gitIdentity, "github.com/org/isolated-seed");
+
+        // Remove remote entry to test Step 4 directly against the isolated <slug>-<gitHash> entry
+        updateProjectsIndex((idx) => {
+            delete idx.projects[remoteRes.storeKey];
+        });
+
+        const secondInfo = getProjectStoreInfo(secondClone);
+        assert.notEqual(secondInfo.storeKey, origInfo.storeKey);
+        assert.notEqual(secondInfo.dbPath, origInfo.dbPath);
+        assert.equal(secondInfo.resolvedVia, "new_path_hash");
+        assert.equal(secondInfo.gitIdentity, "github.com/org/isolated-seed");
+    });
+
+    it("3.10 linkProjectIdentity isolate:true clears gitIdentityAliases and suppresses aliasMatch/conflicts for old remotes", () => {
+        const cloneA = path.join(tempRoot, "clone-a-alias");
+        const cloneB = path.join(tempRoot, "clone-b-old-remote");
+        fs.mkdirSync(path.join(cloneA, ".git"), { recursive: true });
+        fs.mkdirSync(path.join(cloneB, ".git"), { recursive: true });
+
+        fs.writeFileSync(
+            path.join(cloneA, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/old-name.git\n',
+            "utf8"
+        );
+        const infoA1 = getProjectStoreInfo(cloneA);
+        registerProjectInIndex(infoA1);
+
+        // Rename remote on cloneA -> old-name moves to gitIdentityAliases
+        fs.writeFileSync(
+            path.join(cloneA, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/new-name.git\n',
+            "utf8"
+        );
+        const infoA2 = getProjectStoreInfo(cloneA);
+        registerProjectInIndex(infoA2);
+        assert.ok(readProjectsIndex().projects[infoA1.storeKey].gitIdentityAliases.includes("github.com/org/old-name"));
+
+        // Isolate cloneA -> gitIdentity and gitIdentityAliases must both be cleared
+        linkProjectIdentity({ projectPath: cloneA, isolate: true });
+        const isolatedEntry = readProjectsIndex().projects[infoA1.storeKey];
+        assert.equal(isolatedEntry.gitIdentity, null);
+        assert.deepEqual(isolatedEntry.gitIdentityAliases, []);
+
+        // New clone using old-name must not share or conflict with isolated cloneA
+        fs.writeFileSync(
+            path.join(cloneB, ".git", "config"),
+            '[remote "origin"]\n\turl = https://github.com/org/old-name.git\n',
+            "utf8"
+        );
+        const infoB = getProjectStoreInfo(cloneB);
+        assert.notEqual(infoB.storeKey, infoA1.storeKey);
+        assert.equal(infoB.resolvedVia, "new_git_identity");
+        assert.equal(infoB.duplicateCloneCandidate, null);
+        assert.equal(infoB.gitIdentityConflict, null);
+
+        const regB = registerProjectInIndex(infoB);
+        assert.equal(regB.gitIdentityConflict, undefined);
+        assert.equal(readProjectsIndex().projects[infoB.storeKey].gitIdentity, "github.com/org/old-name");
+    });
 });

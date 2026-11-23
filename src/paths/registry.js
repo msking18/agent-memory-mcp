@@ -338,7 +338,7 @@ function findConflictingGitOwner(projects, gitIdentity, selfStoreKey) {
     if (!gitIdentity) return null;
     for (const entry of Object.values(projects)) {
         if (!entry || entry.storeKey === selfStoreKey) continue;
-        if (entry.isolatedGitIdentity && entry.isolatedGitIdentity === gitIdentity) continue;
+        if (entry.isolatedGitIdentity) continue;
         const ownsDirect = entry.gitIdentity === gitIdentity;
         const ownsAlias = Array.isArray(entry.gitIdentityAliases) && entry.gitIdentityAliases.includes(gitIdentity);
         if (ownsDirect || ownsAlias) {
@@ -514,8 +514,8 @@ export function getProjectStoreInfo(rawPath, options = {}) {
             const entryNormCommon = entry.gitCommonDir ? normalizeForIndexCompare(entry.gitCommonDir, false) : null;
             const sameCommonDir = Boolean(normGitCommonDir && entryNormCommon && normGitCommonDir === entryNormCommon);
 
-            if (entry.isolatedGitIdentity && entry.isolatedGitIdentity === gitIdentity) {
-                if (sameCommonDir) {
+            if (entry.isolatedGitIdentity) {
+                if (sameCommonDir && entry.isolatedGitIdentity === gitIdentity) {
                     gitMatches.push({ entry, sameCommonDir: true });
                 }
                 continue;
@@ -574,16 +574,22 @@ export function getProjectStoreInfo(rawPath, options = {}) {
 
     // Step 4: New store allocation
     if (gitIdentity) {
-        const gitHash = sha256Hex12(`git:${gitIdentity}`);
+        const allocated = allocateNewGitStoreKey(
+            parsed.slug,
+            gitIdentity,
+            parsed.normalizedForHash,
+            index.projects,
+            storesDir
+        );
         return buildStoreInfo({
             parsed,
-            storeKey: `${parsed.slug}-${gitHash}`,
-            hashKey: gitHash,
+            storeKey: allocated.storeKey,
+            hashKey: allocated.hashKey,
             storesDir,
             backupsRoot,
             gitIdentity,
             gitCommonDir,
-            resolvedVia: "new_git_identity"
+            resolvedVia: allocated.resolvedVia
         });
     }
 
@@ -600,6 +606,19 @@ export function getProjectStoreInfo(rawPath, options = {}) {
     });
 }
 
+function allocateNewGitStoreKey(slug, gitIdentity, normalizedForHash, projects, storesDir) {
+    const gitHash = sha256Hex12(`git:${gitIdentity}`);
+    const gitStoreKey = `${slug}-${gitHash}`;
+    const occupied =
+        Boolean(projects[gitStoreKey]) ||
+        fs.existsSync(path.join(storesDir, `${gitStoreKey}.db`));
+    if (!occupied) {
+        return { storeKey: gitStoreKey, hashKey: gitHash, resolvedVia: "new_git_identity" };
+    }
+    const pathHash = sha256Hex12(normalizedForHash);
+    return { storeKey: `${slug}-${pathHash}`, hashKey: pathHash, resolvedVia: "new_path_hash" };
+}
+
 function dedupeAliases(candidates, keptCanonicalPath, keptIsRemote) {
     const keptNorm = normalizeForIndexCompare(keptCanonicalPath, keptIsRemote);
     const seen = new Set(keptNorm ? [keptNorm] : []);
@@ -613,6 +632,72 @@ function dedupeAliases(candidates, keptCanonicalPath, keptIsRemote) {
         if (out.length >= MAX_ALIASES) break;
     }
     return out;
+}
+
+function resolveCanonicalAndAliases(existing, callerParsed) {
+    const aliasCandidates = existing && Array.isArray(existing.aliases) ? [...existing.aliases] : [];
+    if (!existing) {
+        return {
+            canonicalPath: callerParsed.canonicalPath,
+            isRemote: Boolean(callerParsed.isRemote),
+            aliases: dedupeAliases([callerParsed.normalizedForHash], callerParsed.canonicalPath, Boolean(callerParsed.isRemote))
+        };
+    }
+
+    const prevCanonical = existing.canonicalPath;
+    const prevMissingLocal = Boolean(prevCanonical) && !existing.isRemote && !fs.existsSync(prevCanonical);
+
+    let canonicalPath;
+    let isRemote;
+    if (prevMissingLocal) {
+        canonicalPath = callerParsed.canonicalPath;
+        isRemote = Boolean(callerParsed.isRemote);
+        aliasCandidates.push(normalizeForIndexCompare(prevCanonical, false));
+    } else {
+        canonicalPath = prevCanonical || callerParsed.canonicalPath;
+        isRemote = prevCanonical
+            ? Boolean(existing.isRemote) && Boolean(callerParsed.isRemote)
+            : Boolean(callerParsed.isRemote);
+    }
+
+    const keptNorm = normalizeForIndexCompare(canonicalPath, isRemote);
+    const callerNorm = normalizeForIndexCompare(callerParsed.normalizedForHash, callerParsed.isRemote);
+    if (callerNorm && callerNorm !== keptNorm) {
+        aliasCandidates.push(callerParsed.normalizedForHash);
+    }
+
+    return {
+        canonicalPath,
+        isRemote,
+        aliases: dedupeAliases(aliasCandidates, canonicalPath, isRemote)
+    };
+}
+
+function detachCallerFromOtherEntries(projects, selfStoreKey, callerKeys) {
+    for (const [otherKey, other] of Object.entries(projects)) {
+        if (!other || other.storeKey === selfStoreKey) continue;
+
+        const filteredAliases = Array.isArray(other.aliases)
+            ? other.aliases.filter((alias) => !setsIntersect(buildLookupKeys(alias, isRemoteUri(alias)), callerKeys))
+            : [];
+        other.aliases = filteredAliases;
+
+        const canonicalMatchesCaller = Boolean(
+            other.canonicalPath &&
+            setsIntersect(buildLookupKeys(other.canonicalPath, other.isRemote), callerKeys)
+        );
+
+        if (canonicalMatchesCaller) {
+            if (filteredAliases.length > 0) {
+                const promoted = filteredAliases.shift();
+                other.canonicalPath = promoted;
+                other.isRemote = isRemoteUri(promoted);
+                other.aliases = dedupeAliases(filteredAliases, promoted, other.isRemote);
+            } else {
+                delete projects[otherKey];
+            }
+        }
+    }
 }
 
 function applyGitIdentityUpgradeToEntry(entry, newGitIdentity, allProjects, selfStoreKey) {
@@ -654,40 +739,12 @@ export function registerProjectInIndex(storeInfo) {
     return updateProjectsIndex((index) => {
         const now = new Date().toISOString();
         const existing = index.projects[storeInfo.storeKey] || null;
-
-        let canonicalPath;
-        let isRemote;
-        const aliasCandidates = existing && Array.isArray(existing.aliases) ? [...existing.aliases] : [];
-
-        if (!existing) {
-            canonicalPath = storeInfo.canonicalPath;
-            isRemote = Boolean(storeInfo.isRemote);
-        } else {
-            const prevCanonical = existing.canonicalPath;
-            const prevMissingLocal = Boolean(prevCanonical) && !existing.isRemote && !fs.existsSync(prevCanonical);
-
-            if (prevMissingLocal) {
-                canonicalPath = storeInfo.canonicalPath;
-                isRemote = Boolean(storeInfo.isRemote);
-                aliasCandidates.push(normalizeForIndexCompare(prevCanonical, false));
-            } else {
-                canonicalPath = prevCanonical || storeInfo.canonicalPath;
-                isRemote = prevCanonical
-                    ? Boolean(existing.isRemote) && Boolean(storeInfo.isRemote)
-                    : Boolean(storeInfo.isRemote);
-            }
-        }
-
-        const keptNorm = normalizeForIndexCompare(canonicalPath, isRemote);
-        const callerNorm = normalizeForIndexCompare(storeInfo.normalizedForHash, storeInfo.isRemote);
-        if (callerNorm && callerNorm !== keptNorm) {
-            aliasCandidates.push(storeInfo.normalizedForHash);
-        }
+        const { canonicalPath, isRemote, aliases } = resolveCanonicalAndAliases(existing, storeInfo);
 
         const entry = {
             storeKey: storeInfo.storeKey,
             canonicalPath,
-            aliases: dedupeAliases(aliasCandidates, canonicalPath, isRemote),
+            aliases,
             gitIdentity: existing ? existing.gitIdentity : null,
             gitIdentityAliases: existing && Array.isArray(existing.gitIdentityAliases) ? [...existing.gitIdentityAliases] : [],
             gitCommonDir: existing?.gitCommonDir || null,
@@ -966,9 +1023,12 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
 
     const mutationResult = updateProjectsIndex((index) => {
         const now = new Date().toISOString();
+        const callerKeys = buildLookupKeys(targetParsed.normalizedForHash, targetParsed.isRemote);
+        for (const k of buildLookupKeys(targetParsed.canonicalPath, targetParsed.isRemote)) {
+            callerKeys.add(k);
+        }
 
         if (isolate) {
-            const callerKeys = buildLookupKeys(targetParsed.normalizedForHash, targetParsed.isRemote);
             const existingSelf = findEntryByPathInIndex(index.projects, callerKeys);
             const pathHash = sha256Hex12(targetParsed.normalizedForHash);
             const storeKey = existingSelf ? existingSelf.storeKey : `${targetParsed.slug}-${pathHash}`;
@@ -986,7 +1046,7 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
                     existingSelf ? Boolean(existingSelf.isRemote) && targetParsed.isRemote : targetParsed.isRemote
                 ),
                 gitIdentity: null,
-                gitIdentityAliases: existingSelf?.gitIdentityAliases || [],
+                gitIdentityAliases: [],
                 gitCommonDir: detectedGit?.gitCommonDir
                     ? normalizeForIndexCompare(detectedGit.gitCommonDir, false)
                     : existingSelf?.gitCommonDir || null,
@@ -997,6 +1057,7 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
                 lastAccessedAt: now
             };
             index.projects[storeKey] = entry;
+            detachCallerFromOtherEntries(index.projects, storeKey, callerKeys);
             return { action: "isolated", storeKey, conflict: null };
         }
 
@@ -1018,7 +1079,7 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
         } else if (remoteSpec.gitIdentity) {
             for (const entry of Object.values(index.projects)) {
                 if (!entry) continue;
-                if (entry.isolatedGitIdentity && entry.isolatedGitIdentity === remoteSpec.gitIdentity) continue;
+                if (entry.isolatedGitIdentity) continue;
                 if (
                     entry.gitIdentity === remoteSpec.gitIdentity ||
                     (Array.isArray(entry.gitIdentityAliases) && entry.gitIdentityAliases.includes(remoteSpec.gitIdentity))
@@ -1030,14 +1091,19 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
 
             if (!targetEntry) {
                 // Check if projectPath itself already had a registered entry we should upgrade
-                const callerKeys = buildLookupKeys(targetParsed.normalizedForHash, targetParsed.isRemote);
                 const selfEntry = findEntryByPathInIndex(index.projects, callerKeys);
                 if (selfEntry) {
                     targetEntry = selfEntry;
                     action = "bound_remote";
                 } else {
-                    const gitHash = sha256Hex12(`git:${remoteSpec.gitIdentity}`);
-                    const newKey = `${targetParsed.slug}-${gitHash}`;
+                    const allocated = allocateNewGitStoreKey(
+                        targetParsed.slug,
+                        remoteSpec.gitIdentity,
+                        targetParsed.normalizedForHash,
+                        index.projects,
+                        storesDir
+                    );
+                    const newKey = allocated.storeKey;
                     index.projects[newKey] = {
                         storeKey: newKey,
                         canonicalPath: targetParsed.canonicalPath,
@@ -1056,30 +1122,17 @@ export function linkProjectIdentity({ projectPath, sourceProjectPath, targetStor
             }
         }
 
-        const keptCanonical = targetEntry.canonicalPath || targetParsed.canonicalPath;
-        const keptRemote = targetEntry.canonicalPath
-            ? Boolean(targetEntry.isRemote) && targetParsed.isRemote
-            : targetParsed.isRemote;
-
-        targetEntry.isRemote = keptRemote;
-        targetEntry.aliases = dedupeAliases(
-            [...(targetEntry.aliases || []), targetParsed.normalizedForHash],
-            keptCanonical,
-            keptRemote
-        );
+        const resolvedCanonical = resolveCanonicalAndAliases(targetEntry, targetParsed);
+        targetEntry.canonicalPath = resolvedCanonical.canonicalPath;
+        targetEntry.isRemote = resolvedCanonical.isRemote;
+        targetEntry.aliases = resolvedCanonical.aliases;
         if (!targetEntry.gitCommonDir && detectedGit?.gitCommonDir) {
             targetEntry.gitCommonDir = normalizeForIndexCompare(detectedGit.gitCommonDir, false);
         }
         targetEntry.lastAccessedAt = now;
 
-        // If projectPath previously appeared as an alias on a different entry, clean it up so Step 1 is unambiguous
-        const callerNorm = normalizeForIndexCompare(targetParsed.normalizedForHash, targetParsed.isRemote);
-        for (const other of Object.values(index.projects)) {
-            if (!other || other.storeKey === targetEntry.storeKey || !Array.isArray(other.aliases)) continue;
-            other.aliases = other.aliases.filter(
-                (a) => normalizeForIndexCompare(a, isRemoteUri(a)) !== callerNorm
-            );
-        }
+        // Detach/retire any other entry whose canonicalPath or aliases[] previously matched projectPath
+        detachCallerFromOtherEntries(index.projects, targetEntry.storeKey, callerKeys);
 
         const conflict = applyGitIdentityUpgradeToEntry(
             targetEntry,

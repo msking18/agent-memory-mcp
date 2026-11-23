@@ -10,3 +10,4 @@ global.db*
 config.json
 *.tmp*
 *.lock
+.worktrees/
